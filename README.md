@@ -110,10 +110,10 @@ After=network.target
 [Service]
 User=your_user
 Group=your_group
-WorkingDirectory=/opt/live-vision
-Environment="PATH=/opt/live-vision/env/bin"
-EnvironmentFile=/opt/live-vision/.env
-ExecStart=/opt/live-vision/env/bin/uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/root/Live-Vision
+Environment="PATH=/root/Live-Vision/env/bin"
+EnvironmentFile=/root/Live-Vision/.env
+ExecStart=/root/Live-Vision/env/bin/uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 
 [Install]
 WantedBy=multi-user.target

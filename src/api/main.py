@@ -16,7 +16,7 @@ app = FastAPI(title="Live Video Analysis API")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # React app URL
+    allow_origins=["*"],  # React app URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -106,12 +106,13 @@ Description=Live-Vision Backend Service
 After=network.target
 
 [Service]
-User=your_user
-Group=your_group
+Type=simple
+User=root
+Group=root
 WorkingDirectory=/root/Live-Vision
-Environment="PATH=/root/Live-Vision/env/bin"
+Environment="PATH=/root/Live-Vision/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=/root/Live-Vision/.env
-ExecStart=/root/Live-Vision/env/bin/uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+ExecStart=/root/Live-Vision/env/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 
 [Install]
 WantedBy=multi-user.target

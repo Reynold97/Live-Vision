@@ -7,14 +7,16 @@ from typing import Optional
 class YouTubeChunker:
     """A class to download YouTube videos and split them into chunks."""
     
-    def __init__(self, base_data_folder="data"):
+    def __init__(self, base_data_folder="data", cookies_path=None):
         """
         Initialize the YouTubeChunker.
         
         Args:
             base_data_folder (str): Base folder where all video chunks will be stored
+            cookies_path (str): Path to the cookies file for YouTube authentication
         """
         self.base_data_folder = base_data_folder
+        self.cookies_path = cookies_path or "/var/www/live-vision/cookies/youtube.txt"
         self._setup_logging()
         self._check_dependencies()
     
@@ -74,7 +76,16 @@ class YouTubeChunker:
             self.logger.info(f"Created output directory: {output_dir}")
             
             # Test yt-dlp can access the URL
-            test_cmd = ['yt-dlp', '--quiet', '--simulate', url]
+            test_cmd = [
+                'yt-dlp', 
+                '--quiet', 
+                '--simulate',
+                '--no-check-certificates',
+                '--extractor-retries', '3',
+                '--force-ipv4',
+                '--cookies', self.cookies_path,
+                url
+            ]
             try:
                 subprocess.run(test_cmd, check=True, capture_output=True)
             except subprocess.CalledProcessError as e:
@@ -94,8 +105,12 @@ class YouTubeChunker:
         ytdlp_cmd = [
             'yt-dlp',
             '--quiet',
-            '-o', '-',  
-            '--format', 'best',  
+            '-o', '-',
+            '--format', 'best',
+            '--no-check-certificates',
+            '--extractor-retries', '3',
+            '--force-ipv4',
+            '--cookies', self.cookies_path,
             url
         ]
         

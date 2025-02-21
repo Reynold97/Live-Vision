@@ -54,16 +54,11 @@ sudo apt install ffmpeg -y
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
 
-# Create project directory
-mkdir -p /opt/live-vision
-cd /opt/live-vision
-```
-
 ### 2. Clone and Set Up Project
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/Live-Vision.git .
+git clone https://github.com/Reynold97/Live-Vision.git
 
 # Create and activate virtual environment
 python3 -m venv env
@@ -75,6 +70,7 @@ pip install -r requirements.txt
 # Setup frontend
 cd frontend
 npm install
+npm install lucide-react react-markdown
 npm run build
 cd ..
 ```
@@ -137,7 +133,7 @@ server {
 
     # Frontend
     location / {
-        root /opt/live-vision/frontend/dist;
+        root /root/Live-Vision/frontend/dist;
         try_files $uri $uri/ /index.html;
     }
 

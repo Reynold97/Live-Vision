@@ -37,8 +37,6 @@ The deployed project should have this structure:
 ### 1. Initial Server Setup
 
 ```bash
-sudo -i
-
 # Update system
 sudo apt update && sudo apt upgrade -y
 

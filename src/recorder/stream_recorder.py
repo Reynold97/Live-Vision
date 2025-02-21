@@ -59,29 +59,33 @@ class YouTubeChunker:
     def process_video(self, url: str, chunk_duration: int, output_dir: Optional[str] = None) -> str:
         """
         Download a YouTube video and split it into chunks.
-        Note: This method is designed to be run in a separate thread via asyncio.to_thread
-        
-        Args:
-            url (str): YouTube video URL
-            chunk_duration (int): Duration of each chunk in seconds
-            output_dir (str, optional): Directory to save chunks. If None, creates based on date/time
-            
-        Returns:
-            str: Path to the directory containing the video chunks
         """
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        else:
-            output_dir = self._create_output_directory()
-            
-        self.logger.info(f"Created output directory: {output_dir}")
-        
         try:
+            # Validate URL
+            if not url.startswith(('http://', 'https://')):
+                raise ValueError(f"Invalid URL format: {url}")
+
+            # Validate output directory
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            else:
+                output_dir = self._create_output_directory()
+                
+            self.logger.info(f"Created output directory: {output_dir}")
+            
+            # Test yt-dlp can access the URL
+            test_cmd = ['yt-dlp', '--quiet', '--simulate', url]
+            try:
+                subprocess.run(test_cmd, check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                self.logger.error(f"Error accessing URL with yt-dlp: {e.stderr.decode()}")
+                raise ValueError(f"Could not access URL: {url}")
+            
             self._download_and_segment(url, chunk_duration, output_dir)
             self.logger.info("Video processing completed successfully")
             return output_dir
-            
-        except subprocess.CalledProcessError as e:
+                
+        except Exception as e:
             self.logger.error(f"Error processing video: {e}")
             raise
             
@@ -89,7 +93,7 @@ class YouTubeChunker:
         """Download and segment the video using yt-dlp and ffmpeg."""
         ytdlp_cmd = [
             'yt-dlp',
-            '--quiet',  # Suppress yt-dlp output
+            '--quiet',
             '-o', '-',  
             '--format', 'best',  
             url
@@ -97,8 +101,8 @@ class YouTubeChunker:
         
         ffmpeg_cmd = [
             'ffmpeg',
-            '-hide_banner',     # Hide ffmpeg compilation details
-            '-loglevel', 'error',  # Only show errors
+            '-hide_banner',     
+            '-loglevel', 'error',  
             '-i', 'pipe:0',  
             '-c', 'copy',    
             '-f', 'segment',
@@ -118,24 +122,23 @@ class YouTubeChunker:
                     stderr=subprocess.PIPE
                 )
                 
-                # Monitor ffmpeg stderr for segment creation
-                while True:
-                    line = ffmpeg_proc.stderr.readline()
-                    if not line:
-                        break
-                    
-                    # Log only when a new segment starts
-                    if b'Opening' in line and b'.mp4' in line:
-                        chunk_name = line.decode().split("'")[1].split('\\')[-1]
-                        self.logger.info(f"Creating new chunk: {chunk_name}")
+                # Capture and log any stderr output
+                stderr_data = ffmpeg_proc.stderr.read().decode()
+                if stderr_data:
+                    self.logger.error(f"FFmpeg error: {stderr_data}")
                 
                 # Wait for completion
                 ffmpeg_proc.wait()
                 if ffmpeg_proc.returncode != 0:
-                    raise subprocess.CalledProcessError(ffmpeg_proc.returncode, ffmpeg_cmd)
+                    raise subprocess.CalledProcessError(
+                        ffmpeg_proc.returncode, 
+                        ffmpeg_cmd, 
+                        stderr=stderr_data
+                    )
                     
             except subprocess.CalledProcessError as e:
                 self.logger.error(f"Error in video processing: {e}")
+                self.logger.error(f"FFmpeg stderr: {e.stderr if hasattr(e, 'stderr') else 'No stderr'}")
                 raise
 
 # Example usage:

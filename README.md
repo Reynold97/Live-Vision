@@ -131,7 +131,7 @@ Add the following configuration:
 ```nginx
 server {
     listen 80;
-    server_name your_domain.com;
+    server_name http://videoanalyzer.storyface.ai;
 
     # Frontend
     location / {

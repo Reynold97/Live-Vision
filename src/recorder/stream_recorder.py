@@ -16,7 +16,7 @@ class YouTubeChunker:
             cookies_path (str): Path to the cookies file for YouTube authentication
         """
         self.base_data_folder = base_data_folder
-        self.cookies_path = cookies_path or "/var/www/live-vision/cookies/youtube.txt"
+        self.cookies_path = cookies_path or "/home/Live-Vision/cookies/youtube.txt"
         self._setup_logging()
         self._check_dependencies()
     

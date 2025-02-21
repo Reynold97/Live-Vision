@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, Set, Dict
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from ..api.websocket_manager import manager
 
 class ChunkProcessingHandler(FileSystemEventHandler):
     """Handles file system events for new video chunks."""
@@ -242,6 +243,9 @@ class VideoPipeline:
                             video_path=chunk_path,
                             prompt=prompt
                         )
+                        
+                    # Add this line to broadcast the result
+                    await manager.broadcast_analysis(result, chunk_path)
                     
                     # Mark as processed and clean up timestamp
                     self.processed_chunks.add(chunk_path)
@@ -249,7 +253,7 @@ class VideoPipeline:
                     
                     # Log result
                     self.logger.info(f"Analysis result for {os.path.basename(chunk_path)}: {result}")
-                    
+                                        
                 except Exception as e:
                     self.logger.error(f"Error analyzing chunk {chunk_path}: {e}")
                 finally:

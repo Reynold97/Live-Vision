@@ -1,11 +1,68 @@
+# src/recorder/stream_recorder.py
 import subprocess
 import os
+import shutil
+import signal
+import platform
+import hashlib
 from datetime import datetime
 import logging
-from typing import Optional
+import time
+from typing import Optional, Dict, Any, List, Callable
+import asyncio
+import threading
+
+class ChunkingProgress:
+    """Tracks the progress of a chunking operation."""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.chunks_created = 0
+        self.last_chunk_time = time.time()
+        self.errors = 0
+        self.status = "initialized"  # initialized, running, completed, failed
+        self.last_error = None
+        self.is_live = False
+        self.chunk_timestamps = {}  # chunk filename -> creation timestamp
+        
+    def update(self, new_chunk: bool = False, chunk_name: Optional[str] = None, 
+               error: Optional[Exception] = None, is_live: Optional[bool] = None) -> None:
+        """Update progress information."""
+        if new_chunk and chunk_name:
+            self.chunks_created += 1
+            self.last_chunk_time = time.time()
+            self.chunk_timestamps[chunk_name] = time.time()
+            
+        if error:
+            self.errors += 1
+            self.last_error = str(error)
+            
+        if is_live is not None:
+            self.is_live = is_live
+            
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status as a dictionary."""
+        return {
+            "start_time": self.start_time,
+            "elapsed_time": time.time() - self.start_time,
+            "chunks_created": self.chunks_created,
+            "last_chunk_time": self.last_chunk_time,
+            "time_since_last_chunk": time.time() - self.last_chunk_time,
+            "errors": self.errors,
+            "last_error": self.last_error,
+            "status": self.status,
+            "is_live": self.is_live,
+            "chunk_count": len(self.chunk_timestamps)
+        }
+        
+    def get_chunk_age(self, chunk_name: str) -> Optional[float]:
+        """Get the age of a chunk in seconds."""
+        if chunk_name in self.chunk_timestamps:
+            return time.time() - self.chunk_timestamps[chunk_name]
+        return None
 
 class YouTubeChunker:
-    """A class to download YouTube videos and split them into chunks."""
+    """An enhanced class to download YouTube videos and split them into chunks."""
     
     def __init__(self, base_data_folder="data", cookies_path=None):
         """
@@ -16,10 +73,13 @@ class YouTubeChunker:
             cookies_path (str): Path to the cookies file for YouTube authentication
         """
         self.base_data_folder = base_data_folder
-        self.cookies_path = cookies_path or "/home/Live-Vision/cookies/youtube.txt"
+        self.cookies_path = cookies_path or os.path.join(os.path.expanduser("~"), "cookies", "youtube.txt")
         self._setup_logging()
         self._check_dependencies()
-    
+        self.active_processes: Dict[str, subprocess.Popen] = {}
+        self.progress_trackers: Dict[str, ChunkingProgress] = {}
+        self.stop_signals: Dict[str, bool] = {}
+        
     def _setup_logging(self):
         """Configure logging for the class."""
         logging.basicConfig(
@@ -31,36 +91,62 @@ class YouTubeChunker:
     def _check_dependencies(self):
         """Check if required external programs are installed."""
         try:
-            subprocess.run(['yt-dlp', '--version'], capture_output=True)
-            subprocess.run(['ffmpeg', '-version'], capture_output=True)
+            subprocess.run(['yt-dlp', '--version'], capture_output=True, check=True)
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
         except FileNotFoundError:
             raise SystemError(
                 "Required dependencies not found. Please install yt-dlp and ffmpeg:\n"
                 "pip install yt-dlp\n"
                 "And install ffmpeg from your system package manager."
             )
+        except subprocess.CalledProcessError:
+            raise SystemError(
+                "Error running dependencies. Please ensure yt-dlp and ffmpeg are properly installed."
+            )
     
-    def _create_output_directory(self):
+    def _create_output_directory(self, custom_dir: Optional[str] = None) -> str:
         """
         Create a nested directory structure for video chunks.
         Format: base_data_folder/YYYY_MM_DD/HH_MM/
-        """
-        now = datetime.now()
-        date_folder = now.strftime('%Y_%m_%d')
-        time_folder = now.strftime('%H_%M')
         
-        output_dir = os.path.join(
-            self.base_data_folder,
-            date_folder,
-            time_folder
-        )
+        Args:
+            custom_dir: Optional custom directory to use instead of generating one
+            
+        Returns:
+            str: Path to the created directory
+        """
+        if custom_dir:
+            output_dir = custom_dir
+        else:
+            now = datetime.now()
+            date_folder = now.strftime('%Y_%m_%d')
+            time_folder = now.strftime('%H_%M')
+            
+            output_dir = os.path.join(
+                self.base_data_folder,
+                date_folder,
+                time_folder
+            )
+            
         os.makedirs(output_dir, exist_ok=True)
         self.logger.info(f"Created directory structure: {output_dir}")
         return output_dir
     
-    def process_video(self, url: str, chunk_duration: int, output_dir: Optional[str] = None) -> str:
+    def _get_url_hash(self, url: str) -> str:
+        """Generate a hash for the URL to use as a unique identifier."""
+        return hashlib.md5(url.encode()).hexdigest()
+    
+    def process_video(self, url: str, chunk_duration: int = 30, output_dir: Optional[str] = None) -> str:
         """
         Download a YouTube video and split it into chunks.
+        
+        Args:
+            url: YouTube URL to process
+            chunk_duration: Duration of each chunk in seconds
+            output_dir: Optional custom output directory
+            
+        Returns:
+            str: Path to the output directory
         """
         try:
             # Validate URL
@@ -75,6 +161,11 @@ class YouTubeChunker:
                 
             self.logger.info(f"Created output directory: {output_dir}")
             
+            # Initialize progress tracker
+            url_hash = self._get_url_hash(url)
+            self.progress_trackers[url_hash] = ChunkingProgress()
+            self.stop_signals[url_hash] = False
+            
             # Test yt-dlp can access the URL
             test_cmd = [
                 'yt-dlp', 
@@ -82,26 +173,100 @@ class YouTubeChunker:
                 '--simulate',
                 '--no-check-certificates',
                 '--extractor-retries', '3',
-                '--force-ipv4',
-                '--cookies', self.cookies_path,
-                url
+                '--force-ipv4'
             ]
+            
+            # Add cookies if the file exists
+            if os.path.exists(self.cookies_path):
+                test_cmd.extend(['--cookies', self.cookies_path])
+            else:
+                self.logger.warning(f"Cookies file not found at {self.cookies_path}")
+                
+            test_cmd.append(url)
+            
             try:
-                subprocess.run(test_cmd, check=True, capture_output=True)
+                self.logger.info(f"Testing URL accessibility: {url}")
+                result = subprocess.run(test_cmd, check=True, capture_output=True, text=True)
+                
+                # Check if it's a live stream
+                is_live = False
+                if "is a live stream" in result.stdout:
+                    is_live = True
+                    self.logger.info(f"Detected live stream: {url}")
+                    
+                self.progress_trackers[url_hash].update(is_live=is_live)
             except subprocess.CalledProcessError as e:
-                self.logger.error(f"Error accessing URL with yt-dlp: {e.stderr.decode()}")
+                self.logger.error(f"Error accessing URL with yt-dlp: {e.stderr}")
+                self.progress_trackers[url_hash].update(error=e)
+                self.progress_trackers[url_hash].status = "failed"
                 raise ValueError(f"Could not access URL: {url}")
             
-            self._download_and_segment(url, chunk_duration, output_dir)
+            # Start downloading and segmenting
+            self.progress_trackers[url_hash].status = "running"
+            self._download_and_segment(url, chunk_duration, output_dir, url_hash)
+            
+            # If we get here, process completed successfully
+            self.progress_trackers[url_hash].status = "completed"
             self.logger.info("Video processing completed successfully")
             return output_dir
                 
         except Exception as e:
+            url_hash = self._get_url_hash(url)
+            if url_hash in self.progress_trackers:
+                self.progress_trackers[url_hash].update(error=e)
+                self.progress_trackers[url_hash].status = "failed"
             self.logger.error(f"Error processing video: {e}")
             raise
+    
+    def _watch_for_new_chunks(self, output_dir: str, url_hash: str) -> None:
+        """
+        Watch for new chunks being created in the output directory.
+        This is a synchronous version that runs in a separate thread.
+        
+        Args:
+            output_dir: Directory to watch
+            url_hash: Hash of the URL for tracking
+        """
+        known_chunks = set()
+        
+        while (
+            url_hash in self.progress_trackers and 
+            self.progress_trackers[url_hash].status == "running" and
+            not self.stop_signals.get(url_hash, True)
+        ):
+            try:
+                # Get the current chunks
+                chunks = [f for f in os.listdir(output_dir) if f.endswith('.mp4')]
+                
+                # Check for new chunks
+                for chunk in chunks:
+                    if chunk not in known_chunks:
+                        chunk_path = os.path.join(output_dir, chunk)
+                        # Only count it if it's a valid file with some content
+                        if os.path.isfile(chunk_path) and os.path.getsize(chunk_path) > 0:
+                            known_chunks.add(chunk)
+                            self.progress_trackers[url_hash].update(
+                                new_chunk=True, 
+                                chunk_name=chunk
+                            )
+                            self.logger.info(f"New chunk detected: {chunk}")
+                    
+                # Sleep briefly
+                time.sleep(1)
+            except Exception as e:
+                self.logger.error(f"Error in chunk watcher: {e}")
+                time.sleep(5)  # Wait longer on error
             
-    def _download_and_segment(self, url: str, chunk_duration: int, output_dir: str) -> None:
-        """Download and segment the video using yt-dlp and ffmpeg."""
+    def _download_and_segment(self, url: str, chunk_duration: int, output_dir: str, url_hash: str) -> None:
+        """
+        Download and segment the video using yt-dlp and ffmpeg.
+        
+        Args:
+            url: YouTube URL to process
+            chunk_duration: Duration of each chunk in seconds
+            output_dir: Directory to store the chunks
+            url_hash: Hash of the URL for tracking purposes
+        """
         ytdlp_cmd = [
             'yt-dlp',
             '--quiet',
@@ -109,10 +274,14 @@ class YouTubeChunker:
             '--format', 'best',
             '--no-check-certificates',
             '--extractor-retries', '3',
-            '--force-ipv4',
-            '--cookies', self.cookies_path,
-            url
+            '--force-ipv4'
         ]
+        
+        # Add cookies if the file exists
+        if os.path.exists(self.cookies_path):
+            ytdlp_cmd.extend(['--cookies', self.cookies_path])
+            
+        ytdlp_cmd.append(url)
         
         ffmpeg_cmd = [
             'ffmpeg',
@@ -128,45 +297,241 @@ class YouTubeChunker:
         ]
         
         # Start yt-dlp process
-        with subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as ytdlp_proc:
-            # Start ffmpeg process
-            try:
-                ffmpeg_proc = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdin=ytdlp_proc.stdout,
-                    stderr=subprocess.PIPE
+        self.logger.info(f"Starting download process for: {url}")
+        
+        ytdlp_proc = subprocess.Popen(
+            ytdlp_cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        
+        # Store process for potential termination
+        self.active_processes[url_hash] = ytdlp_proc
+        
+        # Start ffmpeg process
+        try:
+            self.logger.info("Starting ffmpeg segmentation process")
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=ytdlp_proc.stdout,
+                stderr=subprocess.PIPE
+            )
+            
+            # Start a thread to watch for new chunks
+            watcher_thread = threading.Thread(
+                target=self._watch_for_new_chunks,
+                args=(output_dir, url_hash),
+                daemon=True
+            )
+            watcher_thread.start()
+            
+            # Wait for process to complete or be terminated
+            while True:
+                # Check if stop was requested
+                if url_hash in self.stop_signals and self.stop_signals[url_hash]:
+                    self.logger.info(f"Stop signal received for {url}")
+                    self._terminate_processes(ytdlp_proc, ffmpeg_proc)
+                    break
+                    
+                # Check if processes are still running
+                if ytdlp_proc.poll() is not None and ffmpeg_proc.poll() is not None:
+                    # Both processes have completed
+                    self.logger.info("Download and segmentation processes completed")
+                    break
+                    
+                # Sleep briefly
+                time.sleep(0.5)
+            
+            # Try to join the watcher thread with a timeout
+            if watcher_thread.is_alive():
+                watcher_thread.join(timeout=2.0)
+            
+            # Capture and log any stderr output
+            ytdlp_stderr = ytdlp_proc.stderr.read().decode() if ytdlp_proc.stderr else ""
+            ffmpeg_stderr = ffmpeg_proc.stderr.read().decode() if ffmpeg_proc.stderr else ""
+            
+            if ytdlp_stderr:
+                self.logger.error(f"yt-dlp error: {ytdlp_stderr}")
+                self.progress_trackers[url_hash].update(error=Exception(ytdlp_stderr))
+                
+            if ffmpeg_stderr:
+                self.logger.error(f"FFmpeg error: {ffmpeg_stderr}")
+                self.progress_trackers[url_hash].update(error=Exception(ffmpeg_stderr))
+            
+            # Check return codes
+            if ytdlp_proc.returncode != 0 and not self.stop_signals.get(url_hash, False):
+                raise subprocess.CalledProcessError(
+                    ytdlp_proc.returncode, 
+                    ytdlp_cmd, 
+                    stderr=ytdlp_stderr
                 )
                 
-                # Capture and log any stderr output
-                stderr_data = ffmpeg_proc.stderr.read().decode()
-                if stderr_data:
-                    self.logger.error(f"FFmpeg error: {stderr_data}")
+            if ffmpeg_proc.returncode != 0 and not self.stop_signals.get(url_hash, False):
+                raise subprocess.CalledProcessError(
+                    ffmpeg_proc.returncode, 
+                    ffmpeg_cmd, 
+                    stderr=ffmpeg_stderr
+                )
                 
-                # Wait for completion
-                ffmpeg_proc.wait()
-                if ffmpeg_proc.returncode != 0:
-                    raise subprocess.CalledProcessError(
-                        ffmpeg_proc.returncode, 
-                        ffmpeg_cmd, 
-                        stderr=stderr_data
-                    )
-                    
-            except subprocess.CalledProcessError as e:
-                self.logger.error(f"Error in video processing: {e}")
-                self.logger.error(f"FFmpeg stderr: {e.stderr if hasattr(e, 'stderr') else 'No stderr'}")
-                raise
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error in video processing: {e}")
+            self.logger.error(f"Command stderr: {e.stderr if hasattr(e, 'stderr') else 'No stderr'}")
+            self.progress_trackers[url_hash].update(error=e)
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            self.progress_trackers[url_hash].update(error=e)
+            raise
+        finally:
+            # Clean up processes
+            if url_hash in self.active_processes:
+                del self.active_processes[url_hash]
+    
+    def _terminate_processes(self, ytdlp_proc: subprocess.Popen, ffmpeg_proc: subprocess.Popen) -> None:
+        """Gracefully terminate yt-dlp and ffmpeg processes."""
+        self.logger.info("Terminating download and segmentation processes")
+        
+        # Function to terminate a process based on the platform
+        def terminate_process(proc):
+            if proc.poll() is None:  # Only terminate if still running
+                if platform.system() == "Windows":
+                    # On Windows use taskkill to force terminate
+                    try:
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], 
+                                     check=False, capture_output=True)
+                    except Exception as e:
+                        self.logger.error(f"Error terminating process on Windows: {e}")
+                else:
+                    # On Unix-like systems, try SIGTERM then SIGKILL
+                    try:
+                        proc.terminate()  # SIGTERM
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        self.logger.warning("Process did not terminate gracefully, sending SIGKILL")
+                        proc.kill()  # SIGKILL
+        
+        # Try to terminate ffmpeg first
+        terminate_process(ffmpeg_proc)
+        
+        # Then terminate yt-dlp
+        terminate_process(ytdlp_proc)
+    
+    def stop_processing(self, url: str) -> bool:
+        """
+        Stop an active processing job.
+        
+        Args:
+            url: URL of the job to stop
+            
+        Returns:
+            bool: True if successfully stopped, False otherwise
+        """
+        url_hash = self._get_url_hash(url)
+        
+        if url_hash in self.stop_signals:
+            self.logger.info(f"Setting stop signal for {url}")
+            self.stop_signals[url_hash] = True
+            
+            # Wait for process to be terminated
+            attempts = 0
+            while url_hash in self.active_processes and attempts < 10:
+                time.sleep(0.5)
+                attempts += 1
+                
+            # Check if process was terminated
+            if url_hash not in self.active_processes:
+                self.logger.info(f"Successfully stopped processing for {url}")
+                return True
+            else:
+                # Force kill if still running after waiting
+                proc = self.active_processes.get(url_hash)
+                if proc and proc.poll() is None:
+                    if platform.system() == "Windows":
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], check=False)
+                    else:
+                        proc.kill()
+                    self.logger.warning(f"Forcibly terminated process for {url}")
+                    del self.active_processes[url_hash]
+                    return True
+        else:
+            self.logger.warning(f"No active processing job found for {url}")
+            return False
+            
+        return False
+    
+    def get_progress(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        Get progress information for a URL.
+        
+        Args:
+            url: URL to get progress for
+            
+        Returns:
+            Dict or None: Progress information or None if not found
+        """
+        url_hash = self._get_url_hash(url)
+        if url_hash in self.progress_trackers:
+            return self.progress_trackers[url_hash].get_status()
+        return None
+        
+    def cleanup_old_chunks(self, max_age_hours: int = 24) -> int:
+        """
+        Clean up old chunk files to free up disk space.
+        
+        Args:
+            max_age_hours: Maximum age of chunks to keep in hours
+            
+        Returns:
+            int: Number of files deleted
+        """
+        count = 0
+        cutoff_time = time.time() - (max_age_hours * 3600)
+        
+        try:
+            # Walk through the data directory
+            for root, dirs, files in os.walk(self.base_data_folder):
+                for file in files:
+                    if file.endswith('.mp4'):
+                        file_path = os.path.join(root, file)
+                        # Check file age
+                        mtime = os.path.getmtime(file_path)
+                        if mtime < cutoff_time:
+                            os.remove(file_path)
+                            count += 1
+                            
+            self.logger.info(f"Cleaned up {count} old chunk files")
+        except Exception as e:
+            self.logger.error(f"Error cleaning up old chunks: {e}")
+            
+        return count
 
 # Example usage:
 if __name__ == "__main__":
-    # Initialize the chunker
-    chunker = YouTubeChunker()
+    import time
     
-    # Process a video
-    try:
-        output_path = chunker.process_video(
-            url="https://www.youtube.com/watch?v=IWBn0-KQIdI",
-            chunk_duration=15  # 60-second chunks
-        )
-        print(f"Video chunks saved in: {output_path}")
-    except Exception as e:
-        print(f"Error: {e}")
+    def main():
+        # Initialize the chunker
+        chunker = YouTubeChunker()
+        
+        # Process a video
+        try:
+            output_path = chunker.process_video(
+                url="https://www.youtube.com/watch?v=jfKfPfyJRdk",  # lofi hip hop radio - beats to relax/study to
+                chunk_duration=30  # 30-second chunks
+            )
+            print(f"Video chunks being saved in: {output_path}")
+            
+            # Wait for a while and then stop the process
+            time.sleep(60)
+            chunker.stop_processing("https://www.youtube.com/watch?v=jfKfPfyJRdk")
+            print("Processing stopped")
+            
+            # Check progress
+            progress = chunker.get_progress("https://www.youtube.com/watch?v=jfKfPfyJRdk")
+            print(f"Progress: {progress}")
+            
+        except Exception as e:
+            print(f"Error: {e}")
+    
+    # Run the example
+    main()

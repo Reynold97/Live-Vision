@@ -1,37 +1,100 @@
-from fastapi import FastAPI, WebSocket, HTTPException
+# src/api/main.py
+from fastapi import FastAPI, WebSocket, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from .websocket_manager import manager
-from ..pipeline.video_pipeline import VideoPipeline
-from ..recorder.stream_recorder import YouTubeChunker
-from ..analyzer.gemini_analyzer import GeminiVideoAnalyzer
+from pydantic import BaseModel, Field, model_validator
+import re
 import os
-from dotenv import load_dotenv
+import asyncio
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 
-# Load environment variables
-load_dotenv()
+from .websocket_manager import manager
+from ..core.pipeline_manager import PipelineManager, StreamSource
+from ..core.config import settings
 
-app = FastAPI(title="Live Video Analysis API")
+# Initialize the pipeline manager as a global singleton
+pipeline_manager = PipelineManager(
+    base_data_dir=settings.PIPELINE.BASE_DATA_DIR,
+    max_concurrent_pipelines=settings.PIPELINE.MAX_CONCURRENT_PIPELINES,
+    api_key=settings.ANALYSIS.GOOGLE_API_KEY
+)
+
+app = FastAPI(title="Multi-Channel Video Analysis API")
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # React app URL
+    allow_origins=settings.API.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Store active pipelines
-active_pipelines = {}
+def validate_youtube_url(url: str) -> bool:
+    """Validate YouTube URL format."""
+    patterns = [
+        r'^(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$',
+    ]
+    return any(re.match(pattern, url) for pattern in patterns)
 
-class AnalysisRequest(BaseModel):
+# Models
+class SourceRequest(BaseModel):
     url: str
-    chunk_duration: int
+    source_type: str = "youtube"  # Default to YouTube
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    @model_validator(mode='after')
+    def validate_fields(self) -> 'SourceRequest':
+        # Validate URL
+        if not validate_youtube_url(self.url):
+            raise ValueError("Invalid YouTube URL format")
+        
+        # Validate source type
+        valid_types = settings.PIPELINE.SUPPORTED_SOURCE_TYPES
+        if self.source_type not in valid_types:
+            raise ValueError(f"Invalid source type. Must be one of: {valid_types}")
+            
+        return self
 
-class StopRequest(BaseModel):
+class PipelineRequest(BaseModel):
+    source_id: str
+    chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
+    analysis_prompt: Optional[str] = None
+    use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH
+    
+    @model_validator(mode='after')
+    def validate_duration(self) -> 'PipelineRequest':
+        if (self.chunk_duration < settings.PIPELINE.MIN_CHUNK_DURATION or 
+            self.chunk_duration > settings.PIPELINE.MAX_CHUNK_DURATION):
+            raise ValueError(
+                f"Chunk duration must be between {settings.PIPELINE.MIN_CHUNK_DURATION} "
+                f"and {settings.PIPELINE.MAX_CHUNK_DURATION} seconds"
+            )
+        return self
+
+class PipelineActionRequest(BaseModel):
+    pipeline_id: str
+
+class LegacyAnalysisRequest(BaseModel):
     url: str
+    chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
+    
+    @model_validator(mode='after')
+    def validate_fields(self) -> 'LegacyAnalysisRequest':
+        # Validate URL
+        if not validate_youtube_url(self.url):
+            raise ValueError("Invalid YouTube URL format")
+            
+        # Validate chunk duration
+        if (self.chunk_duration < settings.PIPELINE.MIN_CHUNK_DURATION or 
+            self.chunk_duration > settings.PIPELINE.MAX_CHUNK_DURATION):
+            raise ValueError(
+                f"Chunk duration must be between {settings.PIPELINE.MIN_CHUNK_DURATION} "
+                f"and {settings.PIPELINE.MAX_CHUNK_DURATION} seconds"
+            )
+        return self
 
+# Routes
 @app.websocket("/ws/analysis")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -41,103 +104,210 @@ async def websocket_endpoint(websocket: WebSocket):
     except:
         manager.disconnect(websocket)
 
-@app.post("/start-analysis")
-async def start_analysis(request: AnalysisRequest):
+@app.post("/sources", response_model=Dict[str, Any])
+async def create_source(request: SourceRequest):
+    """Register a new streaming source."""
     try:
-        # Validate chunk duration
-        if request.chunk_duration < 10 or request.chunk_duration > 300:
-            raise HTTPException(
-                status_code=400, 
-                detail="Chunk duration must be between 10 and 300 seconds"
-            )
-        
-        # Get API key from environment
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise HTTPException(
-                status_code=500, 
-                detail="GOOGLE_API_KEY not found in environment variables"
-            )
-            
-        # Initialize components
-        chunker = YouTubeChunker()
-        analyzer = GeminiVideoAnalyzer(api_key=api_key)
-        
-        # Create pipeline
-        pipeline = VideoPipeline(
-            chunker=chunker,
-            analyzer=analyzer
+        source = await pipeline_manager.register_source(
+            url=request.url,
+            source_type=request.source_type,
+            metadata=request.metadata
         )
         
-        # Store the pipeline
-        active_pipelines[request.url] = pipeline
+        return {
+            "status": "success",
+            "message": "Source registered successfully",
+            "source": source.model_dump()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sources", response_model=List[Dict[str, Any]])
+async def list_sources():
+    """List all registered sources."""
+    # Get unique sources from all pipelines
+    sources = {}
+    for pipeline in pipeline_manager.pipelines.values():
+        source = pipeline["source"]
+        sources[source.source_id] = source
         
-        # Start pipeline as background task
-        import asyncio
-        asyncio.create_task(pipeline.start_pipeline(
-            url=request.url,
+    return [source.model_dump() for source in sources.values()]
+
+@app.post("/pipelines", response_model=Dict[str, Any])
+async def create_pipeline(request: PipelineRequest):
+    """Create a new pipeline for a source."""
+    try:
+        # Find the source
+        source = None
+        for pipeline in pipeline_manager.pipelines.values():
+            if pipeline["source"].source_id == request.source_id:
+                source = pipeline["source"]
+                break
+                
+        if not source:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source not found: {request.source_id}"
+            )
+            
+        # Create pipeline
+        pipeline_id = await pipeline_manager.create_pipeline(
+            source=source,
             chunk_duration=request.chunk_duration,
-            analysis_prompt="""
-                Analyze this video segment and focus on identifying commercial elements and opportunities. Please:
-
-                1. First describe the main content and context of this segment:
-                - What type of event or content is this?
-                - Who or what is being shown?
-                - What is the setting or location?
-
-                2. Identify specific commercial elements:
-                - Teams, athletes, or performers involved
-                - Venues or locations
-                - Equipment or gear being used
-                - Brands or logos visible
-                - Any merchandise already being displayed
-
-                3. Search the web and provide:
-                - Official merchandise stores for any teams/performers identified
-                - Related products with direct purchase links
-                - Licensed merchandise availability
-                - Similar products or alternatives
-
-                Format your response in markdown with clear sections and include specific URLs where available. 
-                Keep your analysis focused on legitimate, official merchandise and commercial opportunities.
-                If you cannot identify specific commercial elements, provide context about the general category of products related to the content.
-                Don't make any introduction or conclusions, just straight to the points.
-                """,
-            use_web_search=True
-        ))
+            analysis_prompt=request.analysis_prompt,
+            use_web_search=request.use_web_search
+        )
         
         return {
-            "status": "success", 
-            "message": "Analysis started",
-            "url": request.url,
-            "chunk_duration": request.chunk_duration
+            "status": "success",
+            "message": "Pipeline created successfully",
+            "pipeline_id": pipeline_id
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pipelines/{pipeline_id}/start", response_model=Dict[str, Any])
+async def start_pipeline(pipeline_id: str):
+    """Start a pipeline."""
+    try:
+        success = await pipeline_manager.start_pipeline(pipeline_id)
         
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot start pipeline {pipeline_id}"
+            )
+            
+        return {
+            "status": "success",
+            "message": "Pipeline started successfully",
+            "pipeline_id": pipeline_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pipelines/{pipeline_id}/stop", response_model=Dict[str, Any])
+async def stop_pipeline(pipeline_id: str):
+    """Stop a pipeline."""
+    try:
+        success = await pipeline_manager.stop_pipeline(pipeline_id)
+        
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot stop pipeline {pipeline_id}"
+            )
+            
+        return {
+            "status": "success",
+            "message": "Pipeline stop signal sent",
+            "pipeline_id": pipeline_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/pipelines/{pipeline_id}", response_model=Dict[str, Any])
+async def get_pipeline_status(pipeline_id: str):
+    """Get the status of a pipeline."""
+    status = await pipeline_manager.get_pipeline_status(pipeline_id)
+    
+    if not status:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Pipeline not found: {pipeline_id}"
+        )
+        
+    return status
+
+@app.get("/pipelines", response_model=List[Dict[str, Any]])
+async def list_pipelines():
+    """List all pipelines."""
+    return await pipeline_manager.get_all_pipeline_statuses()
+
+# Backward compatibility with original API
+@app.post("/start-analysis")
+async def start_analysis_legacy(request: LegacyAnalysisRequest):
+    """Legacy endpoint for starting analysis."""
+    try:
+        # Register source
+        source = await pipeline_manager.register_source(
+            url=request.url,
+            source_type="youtube",
+            metadata={"chunk_duration": request.chunk_duration}
+        )
+        
+        # Create pipeline
+        pipeline_id = await pipeline_manager.create_pipeline(
+            source=source,
+            chunk_duration=request.chunk_duration,
+            analysis_prompt=settings.ANALYSIS.DEFAULT_ANALYSIS_PROMPT,
+            use_web_search=settings.ANALYSIS.USE_WEB_SEARCH
+        )
+        
+        # Start pipeline
+        await pipeline_manager.start_pipeline(pipeline_id)
+        
+        return {
+            "status": "success",
+            "message": "Analysis started",
+            "pipeline_id": pipeline_id,
+            "url": request.url
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stop-analysis")
-async def stop_analysis(request: StopRequest):
+async def stop_analysis_legacy(request: LegacyAnalysisRequest):
+    """Legacy endpoint for stopping analysis."""
     try:
-        pipeline = active_pipelines.get(request.url)
-        if pipeline:
-            # Stop the pipeline
-            pipeline.is_running = False  # Signal the pipeline to stop
-            await pipeline._cleanup()    # Run cleanup
-            del active_pipelines[request.url]  # Remove from active pipelines
-            return {"status": "success", "message": "Analysis stopped"}
-        else:
+        # Find pipeline by URL
+        pipeline_id = None
+        for pid, pipeline in pipeline_manager.pipelines.items():
+            if pipeline["source"].url == request.url:
+                pipeline_id = pid
+                break
+                
+        if not pipeline_id:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active analysis found for URL: {request.url}"
             )
+            
+        # Stop pipeline
+        await pipeline_manager.stop_pipeline(pipeline_id)
+        
+        return {
+            "status": "success",
+            "message": "Analysis stopped",
+            "pipeline_id": pipeline_id
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Shutdown event to cleanup resources
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "active_pipelines": sum(1 for p in pipeline_manager.pipelines.values() 
+                              if p["state_machine"].is_active()),
+        "total_pipelines": len(pipeline_manager.pipelines),
+        "version": "2.0.0"
+    }
+
+# Shutdown event to clean up resources
 @app.on_event("shutdown")
 async def shutdown_event():
+    """Cleanup resources on shutdown."""
     # Stop all active pipelines
-    for pipeline in active_pipelines.values():
-        await pipeline._cleanup()
-    active_pipelines.clear()
+    for pipeline_id in list(pipeline_manager.pipelines.keys()):
+        await pipeline_manager.stop_pipeline(pipeline_id)
+        
+    # Wait for all tasks to complete
+    tasks = list(pipeline_manager.tasks.values())
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=5.0)
+        for task in pending:
+            task.cancel()

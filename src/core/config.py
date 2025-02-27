@@ -86,6 +86,7 @@ class AnalysisSettings:
     USE_WEB_SEARCH: bool = Field(default=True, description="Use web search by default")
     MAX_RETRIES: int = Field(default=3, description="Maximum retries for API calls")
     RETRY_DELAY: int = Field(default=15, description="Delay between retries in seconds")
+    EXPORT_RESPONSES: bool = Field(default=True, description="Export full responses to files for analysis")
     
     @model_validator(mode='after')
     def validate_api_key(self) -> 'AnalysisSettings':
@@ -154,6 +155,8 @@ class Settings:
                                              str(self.ANALYSIS.USE_WEB_SEARCH)).lower() in ('true', '1', 'yes')
         self.ANALYSIS.MAX_RETRIES = int(os.getenv("MAX_RETRIES", str(self.ANALYSIS.MAX_RETRIES)))
         self.ANALYSIS.RETRY_DELAY = int(os.getenv("RETRY_DELAY", str(self.ANALYSIS.RETRY_DELAY)))
+        self.ANALYSIS.EXPORT_RESPONSES = os.getenv("EXPORT_RESPONSES", 
+                                      str(self.ANALYSIS.EXPORT_RESPONSES)).lower() in ('true', '1', 'yes')
         
         custom_prompt = os.getenv("DEFAULT_ANALYSIS_PROMPT")
         if custom_prompt:

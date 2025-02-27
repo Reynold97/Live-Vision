@@ -30,7 +30,7 @@ from src.recorder.stream_recorder import YouTubeChunker
 from src.analyzer.gemini_analyzer import GeminiVideoAnalyzer
 from src.api.websocket_manager import manager
 
-#os.environ["GEMINI_TEST_MODE"] = "true"
+os.environ["GEMINI_TEST_MODE"] = "false"
 load_dotenv()
 
 # Setup logging

@@ -138,7 +138,22 @@ class PipelineManager:
             
             # Initialize components
             chunker = YouTubeChunker(base_data_folder=self.base_data_dir)
-            analyzer = GeminiVideoAnalyzer(api_key=self.api_key)
+            
+            # Determine if we should export responses based on config and test mode
+            export_responses = (
+                settings.ANALYSIS.EXPORT_RESPONSES and 
+                not os.getenv("GEMINI_TEST_MODE", "").lower() == "true"
+            )
+
+            # Initialize the analyzer with additional parameters
+            analyzer = GeminiVideoAnalyzer(
+                api_key=self.api_key,
+                max_retries=settings.ANALYSIS.MAX_RETRIES,
+                retry_delay=settings.ANALYSIS.RETRY_DELAY,
+                enable_caching=True,
+                base_data_dir=self.base_data_dir,
+                export_responses=export_responses
+)
             
             # Create state machine
             state_machine = PipelineStateMachine(pipeline_id, self.logger)

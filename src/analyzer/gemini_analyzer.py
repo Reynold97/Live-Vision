@@ -1,8 +1,10 @@
 # src/analyzer/gemini_analyzer.py
+import json
 import logging
 import time
 import os
 import hashlib
+from datetime import datetime
 from google import genai
 from google.genai import types
 from google.genai.errors import ServerError  # Only import ServerError
@@ -72,7 +74,9 @@ class GeminiVideoAnalyzer:
                 max_retries: int = 3, 
                 retry_delay: int = 15,
                 enable_caching: bool = True,
-                cache_size: int = 100):
+                cache_size: int = 100,
+                base_data_dir: str = "data",
+                export_responses: bool = False):
         """
         Initialize the GeminiVideoAnalyzer.
         
@@ -82,12 +86,16 @@ class GeminiVideoAnalyzer:
             retry_delay (int): Delay in seconds between retries
             enable_caching (bool): Whether to cache results to avoid re-analyzing similar content
             cache_size (int): Maximum number of entries in the cache
+            base_data_dir (str): Base directory for storing responses
+            export_responses (bool): Whether to export full responses to files
         """
         self.client = genai.Client(api_key=api_key)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.enable_caching = enable_caching
         self.cache = AnalysisCache(max_size=cache_size) if enable_caching else None
+        self.base_data_dir = base_data_dir
+        self.export_responses = export_responses
         self._setup_logging()
         
         # Performance tracking
@@ -217,7 +225,8 @@ class GeminiVideoAnalyzer:
         
         return any(indicator in error_msg for indicator in server_error_indicators)
 
-    # Changed from async to regular method
+    # Enhanced methods for GeminiVideoAnalyzer class with detailed response logging
+
     def analyze_video(self, video_path: str, prompt: str) -> str:
         """
         Analyze a video file using Gemini Vision.
@@ -259,6 +268,7 @@ class GeminiVideoAnalyzer:
                     self.logger.info(f"Uploading video: {video_path} (attempt {attempt + 1}/{self.max_retries})")
                     video_file = self.client.files.upload(file=video_path)
                     upload_success = True
+                    self.logger.info(f"Upload successful. File ID: {video_file.name}")
                     break
                 except Exception as e:
                     if attempt == self.max_retries - 1:
@@ -286,10 +296,14 @@ class GeminiVideoAnalyzer:
             
             for attempt in range(self.max_retries):
                 try:
+                    self.logger.info(f"Sending prompt to Gemini: {prompt[:100]}...")
                     response = self.client.models.generate_content(
                         model="gemini-2.0-flash",
                         contents=[video_file, prompt]
                     )
+                    self.logger.info("Received response from Gemini")
+                    # Log detailed response information
+                    self._log_gemini_response(response, video_path)
                     break
                 except Exception as e:
                     if attempt == self.max_retries - 1:
@@ -341,7 +355,6 @@ class GeminiVideoAnalyzer:
             
             self.logger.info(f"Analysis of {video_path} completed in {time.time() - start_time:.2f}s")
 
-    # Changed from async to regular method
     def analyze_video_with_web_search(self, video_path: str, prompt: str) -> str:
         """
         Analyze a video file using Gemini Vision with web search capability.
@@ -384,6 +397,7 @@ class GeminiVideoAnalyzer:
                     self.logger.info(f"Uploading video for web search: {video_path} (attempt {attempt + 1}/{self.max_retries})")
                     video_file = self.client.files.upload(file=video_path)
                     upload_success = True
+                    self.logger.info(f"Upload successful for web search. File ID: {video_file.name}")
                     break
                 except Exception as e:
                     if attempt == self.max_retries - 1:
@@ -416,11 +430,15 @@ class GeminiVideoAnalyzer:
             
             for attempt in range(self.max_retries):
                 try:
+                    self.logger.info(f"Sending prompt to Gemini with web search: {prompt[:100]}...")
                     response = self.client.models.generate_content(
                         model="gemini-2.0-flash",
                         contents=[video_file, prompt],
                         config=config
                     )
+                    self.logger.info("Received response from Gemini with web search")
+                    # Log detailed response information
+                    self._log_gemini_response(response, video_path, web_search=True)
                     break
                 except Exception as e:
                     if attempt == self.max_retries - 1:
@@ -471,6 +489,109 @@ class GeminiVideoAnalyzer:
                     self.logger.warning("Failed to clean up video file from Gemini storage")
             
             self.logger.info(f"Web-search analysis of {video_path} completed in {time.time() - start_time:.2f}s")
+
+    def _log_gemini_response(self, response, video_path, web_search=False):
+        """
+        Log detailed information about the Gemini response.
+        
+        Args:
+            response: The response object from Gemini
+            video_path: Path to the video file that was analyzed
+            web_search: Whether web search was used
+        """
+        try:
+            # Create a readable filename for logging
+            video_name = os.path.basename(video_path)
+            
+            # Log basic info
+            search_type = "with web search" if web_search else "standard"
+            self.logger.info(f"Gemini {search_type} response for {video_name}:")
+            
+            # Log the full response text
+            self.logger.info(f"Response text:\n{response.text[:500]}...")
+            
+            # Try to extract and log additional metadata if available
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                self.logger.info(f"Content rating: {getattr(candidate, 'content_trust', 'N/A')}")
+                self.logger.info(f"Response length: {len(response.text)} characters")
+                
+                # Log any safety ratings if present
+                if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+                    self.logger.info("Safety ratings:")
+                    for rating in candidate.safety_ratings:
+                        self.logger.info(f"- {rating.category}: {rating.probability}")
+                
+                # Log any citation metadata if present
+                if hasattr(candidate, 'citation_metadata') and candidate.citation_metadata:
+                    self.logger.info("Citations found in response")
+            
+            # Log any web search information if available
+            if web_search and hasattr(response, 'tools_info'):
+                self.logger.info("Web search information:")
+                self.logger.info(f"Search details: {getattr(response, 'tools_info', 'No search details available')}")
+                
+        except Exception as e:
+            self.logger.warning(f"Error logging Gemini response details: {e}")
+            
+    def _export_gemini_response(self, response, video_path, web_search=False):
+        """
+        Export the full Gemini response to a file for detailed analysis.
+        
+        Args:
+            response: The response object from Gemini
+            video_path: Path to the video file that was analyzed
+            web_search: Whether web search was used
+        """
+        try:
+            # Create a unique filename based on the video and timestamp
+            video_name = os.path.basename(video_path).replace('.mp4', '')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            search_type = "websearch" if web_search else "standard"
+            
+            # Create responses directory if it doesn't exist
+            responses_dir = os.path.join(self.base_data_dir, "gemini_responses")
+            os.makedirs(responses_dir, exist_ok=True)
+            
+            # Create the response file
+            filename = f"{responses_dir}/{video_name}_{search_type}_{timestamp}.json"
+            
+            # Extract all relevant info from the response object
+            response_data = {
+                "timestamp": timestamp,
+                "video_path": video_path,
+                "analysis_type": "web_search" if web_search else "standard",
+                "text": response.text,
+                "metadata": {}
+            }
+            
+            # Try to add additional metadata if available
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                
+                # Add safety ratings if present
+                if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+                    response_data["metadata"]["safety_ratings"] = [
+                        {"category": rating.category, "probability": rating.probability}
+                        for rating in candidate.safety_ratings
+                    ]
+                
+                # Add citation metadata if present
+                if hasattr(candidate, 'citation_metadata') and candidate.citation_metadata:
+                    response_data["metadata"]["citations"] = str(candidate.citation_metadata)
+                    
+            # Add tools info for web search
+            if web_search and hasattr(response, 'tools_info'):
+                response_data["metadata"]["tools_info"] = str(response.tools_info)
+            
+            # Write to file
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(response_data, f, indent=2, ensure_ascii=False)
+                
+            self.logger.info(f"Exported Gemini response to {filename}")
+            
+        except Exception as e:
+            self.logger.warning(f"Error exporting Gemini response to file: {e}")
 
     def _wait_for_processing(self, video_file: Any) -> None:
         """

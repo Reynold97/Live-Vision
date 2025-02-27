@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 import re
 import os
 import asyncio
+import json 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -61,6 +62,7 @@ class PipelineRequest(BaseModel):
     chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
     analysis_prompt: Optional[str] = None
     use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH
+    export_responses: Optional[bool] = None  # Added field for controlling response export
     
     @model_validator(mode='after')
     def validate_duration(self) -> 'PipelineRequest':
@@ -78,6 +80,7 @@ class PipelineActionRequest(BaseModel):
 class LegacyAnalysisRequest(BaseModel):
     url: str
     chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
+    export_responses: Optional[bool] = None  # Added field for controlling response export
     
     @model_validator(mode='after')
     def validate_fields(self) -> 'LegacyAnalysisRequest':
@@ -150,12 +153,13 @@ async def create_pipeline(request: PipelineRequest):
                 detail=f"Source not found: {request.source_id}"
             )
             
-        # Create pipeline
+        # Create pipeline with export_responses parameter
         pipeline_id = await pipeline_manager.create_pipeline(
             source=source,
             chunk_duration=request.chunk_duration,
             analysis_prompt=request.analysis_prompt,
-            use_web_search=request.use_web_search
+            use_web_search=request.use_web_search,
+            export_responses=request.export_responses
         )
         
         return {
@@ -236,12 +240,13 @@ async def start_analysis_legacy(request: LegacyAnalysisRequest):
             metadata={"chunk_duration": request.chunk_duration}
         )
         
-        # Create pipeline
+        # Create pipeline with export_responses parameter
         pipeline_id = await pipeline_manager.create_pipeline(
             source=source,
             chunk_duration=request.chunk_duration,
             analysis_prompt=settings.ANALYSIS.DEFAULT_ANALYSIS_PROMPT,
-            use_web_search=settings.ANALYSIS.USE_WEB_SEARCH
+            use_web_search=settings.ANALYSIS.USE_WEB_SEARCH,
+            export_responses=request.export_responses
         )
         
         # Start pipeline
@@ -294,7 +299,13 @@ async def health_check():
         "active_pipelines": sum(1 for p in pipeline_manager.pipelines.values() 
                               if p["state_machine"].is_active()),
         "total_pipelines": len(pipeline_manager.pipelines),
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "analysis_settings": {
+            "export_responses": settings.ANALYSIS.EXPORT_RESPONSES,
+            "test_mode": os.getenv("GEMINI_TEST_MODE", "").lower() == "true",
+            "use_web_search": settings.ANALYSIS.USE_WEB_SEARCH,
+            "max_retries": settings.ANALYSIS.MAX_RETRIES
+        }
     }
 
 # Shutdown event to clean up resources
@@ -311,3 +322,89 @@ async def shutdown_event():
         done, pending = await asyncio.wait(tasks, timeout=5.0)
         for task in pending:
             task.cancel()
+            
+@app.get("/settings", response_model=Dict[str, Any])
+async def get_settings():
+    """Get current application settings (safe fields only)."""
+    return {
+        "pipeline": {
+            "default_chunk_duration": settings.PIPELINE.DEFAULT_CHUNK_DURATION,
+            "min_chunk_duration": settings.PIPELINE.MIN_CHUNK_DURATION,
+            "max_chunk_duration": settings.PIPELINE.MAX_CHUNK_DURATION,
+            "max_concurrent_pipelines": settings.PIPELINE.MAX_CONCURRENT_PIPELINES,
+            "supported_source_types": settings.PIPELINE.SUPPORTED_SOURCE_TYPES
+        },
+        "analysis": {
+            "use_web_search": settings.ANALYSIS.USE_WEB_SEARCH,
+            "export_responses": settings.ANALYSIS.EXPORT_RESPONSES,
+            "max_retries": settings.ANALYSIS.MAX_RETRIES,
+            "retry_delay": settings.ANALYSIS.RETRY_DELAY,
+            "test_mode": os.getenv("GEMINI_TEST_MODE", "").lower() == "true"
+        },
+        "environment": settings.API.ENVIRONMENT,
+        "response_export_path": os.path.join(settings.PIPELINE.BASE_DATA_DIR, "gemini_responses")
+    }
+    
+@app.get("/responses", response_model=List[Dict[str, Any]])
+async def list_response_files():
+    """List all exported Gemini response files."""
+    responses_dir = os.path.join(settings.PIPELINE.BASE_DATA_DIR, "gemini_responses")
+    response_files = []
+    
+    try:
+        # Create directory if it doesn't exist
+        if not os.path.exists(responses_dir):
+            os.makedirs(responses_dir, exist_ok=True)
+            return response_files
+            
+        # List files
+        files = os.listdir(responses_dir)
+        
+        for file in files:
+            if file.endswith('.json'):
+                file_path = os.path.join(responses_dir, file)
+                stat = os.stat(file_path)
+                
+                # Parse filename to extract metadata
+                parts = file.split('_')
+                file_type = "unknown"
+                
+                if "websearch" in file:
+                    file_type = "web_search"
+                elif "standard" in file:
+                    file_type = "standard"
+                
+                response_files.append({
+                    "filename": file,
+                    "path": file_path,
+                    "size_bytes": stat.st_size,
+                    "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "type": file_type
+                })
+                
+        # Sort by created time, newest first
+        response_files.sort(key=lambda x: x["created"], reverse=True)
+        
+        return response_files
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing response files: {str(e)}")
+
+@app.get("/responses/{filename}", response_model=Dict[str, Any])
+async def get_response_file(filename: str):
+    """Get a specific Gemini response file."""
+    responses_dir = os.path.join(settings.PIPELINE.BASE_DATA_DIR, "gemini_responses")
+    file_path = os.path.join(responses_dir, filename)
+    
+    try:
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"Response file not found: {filename}")
+            
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format in file: {filename}")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Error reading response file: {str(e)}")

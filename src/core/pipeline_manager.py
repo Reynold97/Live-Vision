@@ -119,7 +119,8 @@ class PipelineManager:
     async def create_pipeline(self, source: StreamSource, 
                             chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION,
                             analysis_prompt: Optional[str] = None,
-                            use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH) -> str:
+                            use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH,
+                            export_responses: Optional[bool] = None) -> str:
         """
         Create a new pipeline for a source.
         
@@ -128,6 +129,7 @@ class PipelineManager:
             chunk_duration: Duration of each chunk in seconds
             analysis_prompt: Prompt for analysis
             use_web_search: Whether to use web search
+            export_responses: Whether to export full responses to files (overrides settings)
             
         Returns:
             Pipeline ID
@@ -139,12 +141,10 @@ class PipelineManager:
             # Initialize components
             chunker = YouTubeChunker(base_data_folder=self.base_data_dir)
             
-            # Determine if we should export responses based on config and test mode
-            export_responses = (
-                settings.ANALYSIS.EXPORT_RESPONSES and 
-                not os.getenv("GEMINI_TEST_MODE", "").lower() == "true"
-            )
-
+            # Determine if we should export responses
+            should_export = export_responses if export_responses is not None else settings.ANALYSIS.EXPORT_RESPONSES
+            is_test_mode = os.getenv("GEMINI_TEST_MODE", "").lower() == "true"
+            
             # Initialize the analyzer with additional parameters
             analyzer = GeminiVideoAnalyzer(
                 api_key=self.api_key,
@@ -152,8 +152,8 @@ class PipelineManager:
                 retry_delay=settings.ANALYSIS.RETRY_DELAY,
                 enable_caching=True,
                 base_data_dir=self.base_data_dir,
-                export_responses=export_responses
-)
+                export_responses=should_export and not is_test_mode
+            )
             
             # Create state machine
             state_machine = PipelineStateMachine(pipeline_id, self.logger)

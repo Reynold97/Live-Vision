@@ -5,19 +5,30 @@ const PipelineVisualizer = ({ pipelines = [] }) => {
   const [selectedPipeline, setSelectedPipeline] = useState(null);
   
   useEffect(() => {
-    // Select the first pipeline by default
-    if (pipelines.length > 0 && !selectedPipeline) {
-      const firstPipeline = pipelines[0];
-      setSelectedPipeline(firstPipeline.pipeline_id);
-    } else if (pipelines.length === 0) {
+    // Select the first active pipeline by default
+    if (pipelines.length > 0) {
+      // Prioritize running or starting pipelines
+      const activePipeline = pipelines.find(p => 
+        p.state === 'running' || p.state === 'starting'
+      );
+      
+      if (activePipeline) {
+        setSelectedPipeline(activePipeline.pipeline_id);
+      } else if (!selectedPipeline || !pipelines.find(p => p.pipeline_id === selectedPipeline)) {
+        // If no active pipeline or selected pipeline no longer exists, select the first one
+        setSelectedPipeline(pipelines[0].pipeline_id);
+      }
+    } else {
       setSelectedPipeline(null);
     }
   }, [pipelines, selectedPipeline]);
 
   if (pipelines.length === 0) {
     return (
-      <div className="visualizer-empty">
-        <p>No pipelines available to visualize</p>
+      <div className="pipeline-visualizer">
+        <div className="visualizer-empty">
+          <p>No pipelines available to visualize</p>
+        </div>
       </div>
     );
   }

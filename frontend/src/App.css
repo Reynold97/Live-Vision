@@ -97,6 +97,7 @@ h2 {
 .panel-container {
   display: flex;
   gap: 20px;
+  min-height: calc(100vh - 200px); /* Ensure panels have minimum height */
 }
 
 .left-panel {
@@ -104,10 +105,14 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-width: 300px; /* Ensures left panel doesn't collapse */
 }
 
 .right-panel {
   flex: 1;
+  min-width: 300px; /* Ensures right panel doesn't collapse */
+  display: flex;
+  flex-direction: column;
 }
 
 /* Control panel */
@@ -280,12 +285,40 @@ label {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+.pipeline-header-with-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.pipeline-toggle-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 0.8rem;
+  background-color: #e9ecef;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  color: #495057;
+  cursor: pointer;
+}
+
+.pipeline-toggle-button:hover {
+  background-color: #dee2e6;
+}
+
 .no-pipelines {
   text-align: center;
   padding: 20px;
   color: #6c757d;
   background-color: #f1f3f5;
   border-radius: 5px;
+  min-height: 100px; /* Ensures minimum height */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pipelines {
@@ -294,6 +327,7 @@ label {
   gap: 15px;
   max-height: 500px;
   overflow-y: auto;
+  min-height: 100px; /* Ensures minimum height even when empty */
 }
 
 .pipeline-item.stopping {
@@ -423,6 +457,7 @@ label {
   border: 1px solid #dee2e6;
   border-radius: 5px;
   background-color: white;
+  min-height: 200px; /* Ensures minimum height */
 }
 
 .results-list {
@@ -449,6 +484,11 @@ label {
   text-align: center;
   padding: 40px 20px;
   color: #6c757d;
+  min-height: 200px; /* Ensures minimum height */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .instruction {
@@ -544,6 +584,7 @@ label {
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   margin-bottom: 20px;
+  min-height: 200px; /* Minimum height */
 }
 
 .visualizer-empty {
@@ -552,6 +593,10 @@ label {
   background-color: #f1f3f5;
   border-radius: 8px;
   color: #6c757d;
+  min-height: 150px; /* Minimum height */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pipeline-selector {
@@ -718,4 +763,101 @@ label {
   .results-container {
     max-height: 400px;
   }
+}
+
+.panel-container {
+  display: flex;
+  gap: 20px;
+  min-height: 500px; /* Ensures panels have minimum height */
+}
+
+.left-panel {
+  flex: 0 0 30%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 300px; /* Ensures left panel doesn't collapse */
+}
+
+.right-panel {
+  flex: 1;
+  min-width: 300px; /* Ensures right panel doesn't collapse */
+}
+
+/* Pipeline toggle button */
+.pipeline-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.pipeline-toggle-button {
+  background-color: #e9ecef;
+  color: #495057;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.pipeline-toggle-button:hover {
+  background-color: #dee2e6;
+}
+
+/* Pipeline state colors */
+.state-indicator.running {
+  background-color: #4caf50;
+}
+
+.state-indicator.starting {
+  background-color: #2196f3;
+}
+
+.state-indicator.stopping {
+  background-color: #ff9800;
+}
+
+.state-indicator.stopped {
+  background-color: #9e9e9e;
+}
+
+.state-indicator.failed {
+  background-color: #f44336;
+}
+
+.state-indicator.completed {
+  background-color: #9c27b0;
+}
+
+/* Ensure containers have minimum sizes */
+.results-container {
+  min-height: 200px;
+}
+
+.no-results {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.pipeline-visualizer {
+  min-height: 150px;
+}
+
+.visualizer-empty {
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.no-pipelines {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

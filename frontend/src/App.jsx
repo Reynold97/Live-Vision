@@ -17,9 +17,11 @@ function App() {
   const [backendSettings, setBackendSettings] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [systemStatus, setSystemStatus] = useState(null);
+  const [showInactivePipelines, setShowInactivePipelines] = useState(false);
 
   const websocket = useRef(null);
   const resultsContainerRef = useRef(null);
+  const seenMessages = useRef(new Set());
 
   // Connect to WebSocket and set up event handlers
   useEffect(() => {
@@ -27,9 +29,6 @@ function App() {
       const ws = new WebSocket('ws://localhost:8000/ws/analysis');
       websocket.current = ws;
       
-      // Track seen message timestamps to avoid duplicates
-      const seenMessages = new Set();
-
       ws.onopen = () => {
         console.log('Connected to WebSocket');
         setIsConnected(true);
@@ -40,13 +39,13 @@ function App() {
         const data = JSON.parse(event.data);
         console.log('Received data:', data);
         
-        // Deduplicate messages using timestamp
+        // Deduplicate messages using timestamp and more content
         if (data.type === 'analysis') {
-          // Create a unique ID from timestamp and partial content
-          const messageId = `${data.timestamp}-${data.analysis.substring(0, 20)}`;
+          // Create a more unique ID from timestamp and content
+          const messageId = `${data.timestamp}-${data.chunk_path || ''}-${data.analysis.substring(0, 30)}`;
           
-          if (!seenMessages.has(messageId)) {
-            seenMessages.add(messageId);
+          if (!seenMessages.current.has(messageId)) {
+            seenMessages.current.add(messageId);
             setAnalysisResults(prev => [...prev, data]);
             
             // Auto-scroll to the latest result
@@ -55,9 +54,11 @@ function App() {
             }
             
             // Limit the size of the seen messages set to prevent memory issues
-            if (seenMessages.size > 100) {
-              const oldestMessage = seenMessages.values().next().value;
-              seenMessages.delete(oldestMessage);
+            if (seenMessages.current.size > 100) {
+              // Convert to array, remove first item, convert back to set
+              const messagesArray = Array.from(seenMessages.current);
+              messagesArray.shift();
+              seenMessages.current = new Set(messagesArray);
             }
           } else {
             console.log('Ignoring duplicate message:', messageId);
@@ -173,6 +174,17 @@ function App() {
       )
     );
   }, []);
+
+  // Filter pipelines based on active state
+  const getFilteredPipelines = () => {
+    if (showInactivePipelines) {
+      return activePipelines;
+    } else {
+      return activePipelines.filter(pipeline => 
+        !['stopped', 'failed', 'completed'].includes(pipeline.state)
+      );
+    }
+  };
 
   // Start analysis with the new API
   const handleStartAnalysis = async (e) => {
@@ -376,6 +388,8 @@ function App() {
     return stateColors[state] || 'bg-gray-500';
   };
 
+  const filteredPipelines = getFilteredPipelines();
+
   return (
     <div className="dashboard">
       <div className="container">
@@ -503,24 +517,34 @@ function App() {
             </div>
 
             {/* Pipeline Visualizer */}
-            {activePipelines.length > 0 && (
-              <PipelineVisualizer pipelines={activePipelines} />
+            {filteredPipelines.length > 0 && (
+              <PipelineVisualizer pipelines={filteredPipelines} />
             )}
 
             <div className="pipeline-list">
-              <h2><Cpu size={20} className="panel-icon" /> Active Pipelines</h2>
+              <div className="pipeline-header-row">
+                <h2><Cpu size={20} className="panel-icon" /> Active Pipelines</h2>
+                {activePipelines.length > 0 && (
+                  <button 
+                    className="pipeline-toggle-button"
+                    onClick={() => setShowInactivePipelines(!showInactivePipelines)}
+                  >
+                    {showInactivePipelines ? "Hide Inactive" : "Show All"}
+                  </button>
+                )}
+              </div>
               
-              {activePipelines.length === 0 ? (
+              {filteredPipelines.length === 0 ? (
                 <div className="no-pipelines">
                   <p>No active pipelines</p>
                 </div>
               ) : (
                 <div className="pipelines">
-                  {activePipelines.map(pipeline => (
+                  {filteredPipelines.map(pipeline => (
                     <div key={pipeline.pipeline_id} className={`pipeline-item ${pipeline.state === 'stopping' ? 'stopping' : ''}`}>
                       <div className="pipeline-header">
                         <div className="pipeline-state">
-                          <span className={`state-indicator ${getStateColor(pipeline.state)}`}></span>
+                          <span className={`state-indicator ${pipeline.state}`}></span>
                           <span className="state-text">{pipeline.state}</span>
                           {pipeline.state === 'stopping' && (
                             <span className="stopping-note">(chunking may continue)</span>

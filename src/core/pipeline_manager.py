@@ -238,21 +238,14 @@ class PipelineManager:
         return True
         
     async def stop_pipeline(self, pipeline_id: str) -> bool:
-        """
-        Stop a pipeline.
-        
-        Args:
-            pipeline_id: ID of the pipeline to stop
-            
-        Returns:
-            True if stop signal sent successfully, False otherwise
-        """
+        """Stop a pipeline."""
         if pipeline_id not in self.pipelines:
             self.logger.error(f"Cannot stop pipeline {pipeline_id}: not found")
             return False
             
         pipeline = self.pipelines[pipeline_id]
         state_machine = pipeline["state_machine"]
+        source = pipeline["source"]
         
         # Check if the pipeline can be stopped
         if not state_machine.can_transition_to(PipelineState.STOPPING):
@@ -271,7 +264,24 @@ class PipelineManager:
         if not await state_machine.transition_to(PipelineState.STOPPING):
             self.logger.error(f"Failed to transition pipeline {pipeline_id} to STOPPING state")
             return False
-            
+        
+        # Explicitly attempt to stop the chunking process immediately
+        chunker = pipeline.get("chunker")
+        if chunker:
+            try:
+                self.logger.info(f"Explicitly stopping chunker for pipeline {pipeline_id}")
+                chunking_stopped = await asyncio.to_thread(
+                    chunker.stop_processing,
+                    url=source.url
+                )
+                
+                if chunking_stopped:
+                    self.logger.info(f"Successfully stopped chunking process for pipeline {pipeline_id}")
+                else:
+                    self.logger.warning(f"Failed to explicitly stop chunking process for pipeline {pipeline_id}")
+            except Exception as e:
+                self.logger.error(f"Error stopping chunker explicitly: {e}")
+        
         self.logger.info(f"Stop signal sent to pipeline {pipeline_id}")
         
         return True
@@ -426,6 +436,16 @@ class PipelineManager:
                 "error": str(e)
             })
         finally:
+            # Always ensure we attempt to stop the chunking process
+            if state_machine.get_current_state() in [PipelineState.STOPPING, PipelineState.STOPPED]:
+                try:
+                    await asyncio.to_thread(
+                        chunker.stop_processing,
+                        url=source.url
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error stopping chunker: {e}")
+                    
             # Stop the observer
             observer.stop()
             observer.join()

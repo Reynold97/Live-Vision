@@ -76,7 +76,8 @@ class YouTubeChunker:
         self.cookies_path = cookies_path or os.path.join(os.path.expanduser("~"), "cookies", "youtube.txt")
         self._setup_logging()
         self._check_dependencies()
-        self.active_processes: Dict[str, subprocess.Popen] = {}
+        self.active_processes: Dict[str, subprocess.Popen] = {}  # yt-dlp processes
+        self.ffmpeg_processes: Dict[str, subprocess.Popen] = {}  # Add this line to track ffmpeg processes
         self.progress_trackers: Dict[str, ChunkingProgress] = {}
         self.stop_signals: Dict[str, bool] = {}
         
@@ -317,6 +318,9 @@ class YouTubeChunker:
                 stderr=subprocess.PIPE
             )
             
+            # Store ffmpeg process as well 
+            self.ffmpeg_processes[url_hash] = ffmpeg_proc
+            
             # Start a thread to watch for new chunks
             watcher_thread = threading.Thread(
                 target=self._watch_for_new_chunks,
@@ -386,78 +390,171 @@ class YouTubeChunker:
             # Clean up processes
             if url_hash in self.active_processes:
                 del self.active_processes[url_hash]
+            if url_hash in self.ffmpeg_processes:  
+                del self.ffmpeg_processes[url_hash]
     
-    def _terminate_processes(self, ytdlp_proc: subprocess.Popen, ffmpeg_proc: subprocess.Popen) -> None:
-        """Gracefully terminate yt-dlp and ffmpeg processes."""
+    def _terminate_processes(self, ytdlp_proc: subprocess.Popen, ffmpeg_proc: subprocess.Popen) -> bool:
+        """
+        Aggressively terminate yt-dlp and ffmpeg processes.
+        
+        Returns:
+            bool: True if processes were terminated successfully
+        """
         self.logger.info("Terminating download and segmentation processes")
         
+        # Track if termination was successful
+        all_terminated = True
+        
         # Function to terminate a process based on the platform
-        def terminate_process(proc):
-            if proc.poll() is None:  # Only terminate if still running
+        def terminate_process(proc, process_name):
+            if proc is None or proc.poll() is not None:  # Skip if not running
+                return True
+                
+            terminated = False
+            
+            try:
                 if platform.system() == "Windows":
                     # On Windows use taskkill to force terminate
-                    try:
+                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], 
+                                check=False, capture_output=True)
+                    # Wait briefly to confirm termination
+                    for _ in range(5):  # Wait up to 0.5 seconds
+                        if proc.poll() is not None:
+                            terminated = True
+                            break
+                        time.sleep(0.1)
+                        
+                    # If still running, try more drastic measures
+                    if not terminated:
                         subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], 
-                                     check=False, capture_output=True)
-                    except Exception as e:
-                        self.logger.error(f"Error terminating process on Windows: {e}")
+                                    check=False, capture_output=True)
                 else:
                     # On Unix-like systems, try SIGTERM then SIGKILL
                     try:
                         proc.terminate()  # SIGTERM
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        self.logger.warning("Process did not terminate gracefully, sending SIGKILL")
-                        proc.kill()  # SIGKILL
+                        try:
+                            proc.wait(timeout=3)
+                            terminated = True
+                        except subprocess.TimeoutExpired:
+                            self.logger.warning(f"{process_name} did not terminate gracefully, sending SIGKILL")
+                            proc.kill()  # SIGKILL
+                            proc.wait(timeout=3)
+                            terminated = True
+                    except Exception as e:
+                        self.logger.error(f"Error terminating {process_name}: {e}")
+                        terminated = False
+            except Exception as e:
+                self.logger.error(f"Error terminating {process_name} process: {e}")
+                terminated = False
+                
+            return terminated
         
-        # Try to terminate ffmpeg first
-        terminate_process(ffmpeg_proc)
+        # Try to terminate ffmpeg first (the child process)
+        ffmpeg_terminated = terminate_process(ffmpeg_proc, "FFmpeg")
         
         # Then terminate yt-dlp
-        terminate_process(ytdlp_proc)
+        ytdlp_terminated = terminate_process(ytdlp_proc, "yt-dlp")
+        
+        all_terminated = ffmpeg_terminated and ytdlp_terminated
+        
+        if all_terminated:
+            self.logger.info("All processes successfully terminated")
+        else:
+            self.logger.warning("Some processes may still be running")
+            
+        return all_terminated
     
     def stop_processing(self, url: str) -> bool:
         """
         Stop an active processing job.
         
-        Args:
-            url: URL of the job to stop
-            
         Returns:
             bool: True if successfully stopped, False otherwise
         """
         url_hash = self._get_url_hash(url)
         
-        if url_hash in self.stop_signals:
-            self.logger.info(f"Setting stop signal for {url}")
-            self.stop_signals[url_hash] = True
-            
-            # Wait for process to be terminated
-            attempts = 0
-            while url_hash in self.active_processes and attempts < 10:
-                time.sleep(0.5)
-                attempts += 1
-                
-            # Check if process was terminated
-            if url_hash not in self.active_processes:
-                self.logger.info(f"Successfully stopped processing for {url}")
-                return True
-            else:
-                # Force kill if still running after waiting
-                proc = self.active_processes.get(url_hash)
-                if proc and proc.poll() is None:
-                    if platform.system() == "Windows":
-                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], check=False)
-                    else:
-                        proc.kill()
-                    self.logger.warning(f"Forcibly terminated process for {url}")
-                    del self.active_processes[url_hash]
-                    return True
-        else:
+        if url_hash not in self.stop_signals:
             self.logger.warning(f"No active processing job found for {url}")
             return False
             
-        return False
+        self.logger.info(f"Setting stop signal for {url}")
+        self.stop_signals[url_hash] = True
+        
+        # Get both processes
+        ytdlp_proc = self.active_processes.get(url_hash)
+        ffmpeg_proc = self.ffmpeg_processes.get(url_hash)
+        
+        # Terminate the processes
+        if ytdlp_proc or ffmpeg_proc:
+            self.logger.info(f"Terminating processes for {url}")
+            terminated = self._terminate_processes(ytdlp_proc, ffmpeg_proc)
+            
+            if terminated:
+                self.logger.info(f"Successfully terminated all processes for {url}")
+                # Clean up
+                if url_hash in self.active_processes:
+                    del self.active_processes[url_hash]
+                if url_hash in self.ffmpeg_processes:
+                    del self.ffmpeg_processes[url_hash]
+                return True
+        
+        # Wait for processes to terminate
+        max_attempts = 10
+        for i in range(max_attempts):
+            # Check if processes are gone from dictionaries
+            if url_hash not in self.active_processes and url_hash not in self.ffmpeg_processes:
+                self.logger.info(f"Processes for {url} terminated successfully")
+                return True
+                
+            # Check if processes have terminated
+            ytdlp_terminated = ytdlp_proc is None or ytdlp_proc.poll() is not None
+            ffmpeg_terminated = ffmpeg_proc is None or ffmpeg_proc.poll() is not None
+            
+            if ytdlp_terminated and ffmpeg_terminated:
+                self.logger.info(f"All processes for {url} have terminated")
+                # Clean up
+                if url_hash in self.active_processes:
+                    del self.active_processes[url_hash]
+                if url_hash in self.ffmpeg_processes:
+                    del self.ffmpeg_processes[url_hash]
+                return True
+                
+            # Try again to terminate every few attempts
+            if i % 3 == 2:
+                self.logger.warning(f"Retrying process termination for {url}")
+                self._terminate_processes(ytdlp_proc, ffmpeg_proc)
+                
+            time.sleep(1)
+        
+        # Last resort - forceful termination
+        self.logger.warning(f"Attempting forceful termination for {url}")
+        success = False
+        
+        try:
+            if ytdlp_proc and ytdlp_proc.poll() is None:
+                if platform.system() == "Windows":
+                    subprocess.run(['taskkill', '/F', '/PID', str(ytdlp_proc.pid)], check=False)
+                else:
+                    os.kill(ytdlp_proc.pid, signal.SIGKILL)
+                    
+            if ffmpeg_proc and ffmpeg_proc.poll() is None:
+                if platform.system() == "Windows":
+                    subprocess.run(['taskkill', '/F', '/PID', str(ffmpeg_proc.pid)], check=False)
+                else:
+                    os.kill(ffmpeg_proc.pid, signal.SIGKILL)
+                    
+            # Clean up references regardless
+            if url_hash in self.active_processes:
+                del self.active_processes[url_hash]
+            if url_hash in self.ffmpeg_processes:
+                del self.ffmpeg_processes[url_hash]
+                
+            success = True
+        except Exception as e:
+            self.logger.error(f"Failed to forcefully terminate processes: {e}")
+            success = False
+            
+        return success
     
     def get_progress(self, url: str) -> Optional[Dict[str, Any]]:
         """

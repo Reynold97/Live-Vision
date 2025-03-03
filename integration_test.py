@@ -128,7 +128,12 @@ async def test_pipeline_manager(url: str):
     # Timeout - try to stop the pipeline
     logger.warning("Timed out waiting for pipeline to process chunks")
     await pipeline_manager.stop_pipeline(pipeline_id)
-    return False
+    
+    # Now verify that chunking has actually stopped
+    chunking_stopped = await verify_chunking_stopped(pipeline_manager, pipeline_id)
+    if not chunking_stopped:
+        logger.error("Pipeline chunking did not stop correctly")
+        return False
 
 async def test_error_handling():
     """Test error handling with an invalid URL."""
@@ -296,11 +301,49 @@ async def test_multiple_pipelines(url: str):
         
     return success
 
+async def verify_chunking_stopped(pipeline_manager, pipeline_id, max_wait=30):
+    """Verify the chunking process has truly stopped."""
+    logger.info("Verifying chunking processes have stopped...")
+    
+    status = await pipeline_manager.get_pipeline_status(pipeline_id)
+    if not status:
+        logger.error("Pipeline status not found")
+        return False
+        
+    # Get the output directory
+    output_dir = status["output_dir"]
+    
+    # Check initial file count
+    initial_files = set(os.listdir(output_dir))
+    initial_count = len([f for f in initial_files if f.endswith('.mp4')])
+    
+    logger.info(f"Initial chunk count: {initial_count}")
+    
+    # Wait and check if new files appear
+    wait_time = 5  # Wait 5 seconds between checks
+    for i in range(max_wait // wait_time):
+        await asyncio.sleep(wait_time)
+        
+        current_files = set(os.listdir(output_dir))
+        current_count = len([f for f in current_files if f.endswith('.mp4')])
+        
+        new_files = current_files - initial_files
+        new_chunks = [f for f in new_files if f.endswith('.mp4')]
+        
+        if new_chunks:
+            logger.warning(f"New chunks detected after stop: {new_chunks}")
+            return False
+            
+        logger.info(f"Chunk count after {(i+1)*wait_time}s: {current_count} (no new chunks)")
+        
+    logger.info("No new chunks detected after stop, chunking has stopped successfully")
+    return True
+
 async def main():
     """Run all integration tests with a single YouTube URL."""
     try:
         # Default to a popular live stream if no URL is provided
-        default_url = "https://www.youtube.com/watch?v=jfKfPfyJRdk"  # lofi hip hop radio
+        default_url = "https://www.youtube.com/watch?v=QfDysU5eyM4" 
         
         # Check if URL is provided as command line argument
         if len(sys.argv) > 1:

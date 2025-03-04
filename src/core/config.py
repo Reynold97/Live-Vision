@@ -71,6 +71,7 @@ class AnalysisSettings:
         - Equipment or gear being used
         - Brands or logos visible
         - Any merchandise already being displayed
+        - Ads
 
         3. Search the web and provide:
         - Official merchandise stores for any teams/performers identified

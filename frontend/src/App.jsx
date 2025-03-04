@@ -3,6 +3,7 @@ import { Loader2, Upload, Info, Play, StopCircle, AlertCircle, RefreshCw, Settin
 import ReactMarkdown from 'react-markdown';
 import './App.css';
 import PipelineVisualizer from './components/PipelineVisualizer';
+import config from './config';
 
 // Custom link renderer that opens links in new tabs
 const CustomLink = ({ node, ...props }) => {
@@ -31,7 +32,7 @@ function App() {
   // Connect to WebSocket and set up event handlers
   useEffect(() => {
     const connectWebSocket = () => {
-      const ws = new WebSocket('ws://localhost:8000/ws/analysis');
+      const ws = new WebSocket(`${config.wsBaseUrl}/ws/analysis`);
       websocket.current = ws;
       
       ws.onopen = () => {
@@ -106,7 +107,7 @@ function App() {
   useEffect(() => {
     const fetchSystemStatus = async () => {
       try {
-        const response = await fetch('http://localhost:8000/health');
+        const response = await fetch(`${config.apiBaseUrl}/health`);
         if (response.ok) {
           const data = await response.json();
           setSystemStatus(data);
@@ -127,7 +128,7 @@ function App() {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const response = await fetch('http://localhost:8000/settings');
+        const response = await fetch(`${config.apiBaseUrl}/settings`);
         if (response.ok) {
           const data = await response.json();
           setBackendSettings(data);
@@ -152,7 +153,7 @@ function App() {
   useEffect(() => {
     const fetchPipelines = async () => {
       try {
-        const response = await fetch('http://localhost:8000/pipelines');
+        const response = await fetch(`${config.apiBaseUrl}/pipelines`);
         if (response.ok) {
           const pipelines = await response.json();
           setActivePipelines(pipelines);
@@ -199,7 +200,7 @@ function App() {
     
     try {
       // Alternative approach - using the legacy endpoint for better compatibility
-      const startResponse = await fetch('http://localhost:8000/start-analysis', {
+      const startResponse = await fetch(`${config.apiBaseUrl}/start-analysis`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -227,7 +228,7 @@ function App() {
       
       try {
         // 1. Register the source
-        const sourceResponse = await fetch('http://localhost:8000/sources', {
+        const sourceResponse = await fetch(`${config.apiBaseUrl}/sources`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -255,7 +256,7 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // 2. Create a pipeline
-        const pipelineResponse = await fetch('http://localhost:8000/pipelines', {
+        const pipelineResponse = await fetch(`${config.apiBaseUrl}/pipelines`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -278,7 +279,7 @@ function App() {
         console.log('Pipeline created with ID:', pipelineId);
 
         // 3. Start the pipeline
-        const startResponse = await fetch(`http://localhost:8000/pipelines/${pipelineId}/start`, {
+        const startResponse = await fetch(`${config.apiBaseUrl}/pipelines/${pipelineId}/start`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -315,7 +316,7 @@ function App() {
       
       // Try the dedicated pipeline stop endpoint
       console.log(`Stopping pipeline ${pipelineId} via pipeline endpoint`);
-      const response = await fetch(`http://localhost:8000/pipelines/${pipelineId}/stop`, {
+      const response = await fetch(`${config.apiBaseUrl}/pipelines/${pipelineId}/stop`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -329,7 +330,7 @@ function App() {
         // If we have the URL, try the legacy stop endpoint as fallback
         if (pipelineUrl) {
           console.log(`Trying legacy stop endpoint for URL: ${pipelineUrl}`);
-          const legacyResponse = await fetch('http://localhost:8000/stop-analysis', {
+          const legacyResponse = await fetch(`${config.apiBaseUrl}/stop-analysis`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

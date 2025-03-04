@@ -4,6 +4,11 @@ import ReactMarkdown from 'react-markdown';
 import './App.css';
 import PipelineVisualizer from './components/PipelineVisualizer';
 
+// Custom link renderer that opens links in new tabs
+const CustomLink = ({ node, ...props }) => {
+  return <a target="_blank" rel="noopener noreferrer" {...props} />;
+};
+
 function App() {
   const [analysisResults, setAnalysisResults] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -617,7 +622,10 @@ function App() {
                           {new Date(result.timestamp).toLocaleTimeString()}
                         </div>
                         <div className="markdown-content">
-                          <ReactMarkdown>{result.analysis}</ReactMarkdown>
+                          {/* Use custom link component to open links in new tabs */}
+                          <ReactMarkdown components={{ a: CustomLink }}>
+                            {result.analysis}
+                          </ReactMarkdown>
                         </div>
                       </div>
                     ))}

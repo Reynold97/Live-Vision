@@ -432,7 +432,7 @@ class GeminiVideoAnalyzer:
                 try:
                     self.logger.info(f"Sending prompt to Gemini with web search: {prompt[:100]}...")
                     response = self.client.models.generate_content(
-                        model="gemini-2.0-flash-lite",
+                        model="gemini-2.0-flash",
                         contents=[video_file, prompt],
                         config=config
                     )

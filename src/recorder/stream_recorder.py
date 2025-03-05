@@ -74,6 +74,7 @@ class YouTubeChunker:
         """
         self.base_data_folder = base_data_folder
         self.cookies_path = cookies_path or os.path.join(os.path.expanduser("~"), "cookies", "youtube.txt")
+        self.check_cookie_configuration()
         self._setup_logging()
         self._check_dependencies()
         self.active_processes: Dict[str, subprocess.Popen] = {}  # yt-dlp processes
@@ -601,6 +602,62 @@ class YouTubeChunker:
             self.logger.error(f"Error cleaning up old chunks: {e}")
             
         return count
+    
+    def check_cookie_configuration(self):
+        """
+        Check and log information about the cookie configuration.
+        This helps diagnose cookie-related issues.
+        
+        Returns:
+            dict: Information about cookie configuration
+        """
+        cookie_info = {
+            "configured_path": self.cookies_path,
+            "expanded_path": os.path.expanduser(self.cookies_path),
+            "file_exists": False,
+            "file_size": 0,
+            "file_permissions": None,
+            "readable": False
+        }
+        
+        try:
+            # Check if file exists
+            if os.path.exists(self.cookies_path):
+                cookie_info["file_exists"] = True
+                cookie_info["file_size"] = os.path.getsize(self.cookies_path)
+                
+                # Check permissions
+                stats = os.stat(self.cookies_path)
+                cookie_info["file_permissions"] = oct(stats.st_mode & 0o777)
+                
+                # Check if readable
+                with open(self.cookies_path, 'r') as f:
+                    first_line = f.readline().strip()
+                    cookie_info["readable"] = True
+                    cookie_info["first_line"] = first_line[:40] + "..." if len(first_line) > 40 else first_line
+                
+                self.logger.info(f"Cookie file found at {self.cookies_path}")
+                self.logger.info(f"Cookie file size: {cookie_info['file_size']} bytes")
+                self.logger.info(f"Cookie file permissions: {cookie_info['file_permissions']}")
+            else:
+                self.logger.warning(f"Cookie file not found at {self.cookies_path}")
+                
+                # Check if directory exists
+                cookie_dir = os.path.dirname(self.cookies_path)
+                if not os.path.exists(cookie_dir):
+                    self.logger.warning(f"Cookie directory does not exist: {cookie_dir}")
+                else:
+                    self.logger.info(f"Cookie directory exists: {cookie_dir}")
+                
+                # Check home directory
+                home_dir = os.path.expanduser("~")
+                self.logger.info(f"Home directory is: {home_dir}")
+                
+        except Exception as e:
+            self.logger.error(f"Error checking cookie configuration: {e}")
+            cookie_info["error"] = str(e)
+        
+        return cookie_info
 
 # Example usage:
 if __name__ == "__main__":

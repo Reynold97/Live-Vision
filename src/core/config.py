@@ -36,6 +36,7 @@ class PipelineSettings:
     MAX_CHUNK_DURATION: int = Field(default=300, description="Maximum chunk duration in seconds")
     DEFAULT_CHUNK_DURATION: int = Field(default=30, description="Default chunk duration in seconds")
     SUPPORTED_SOURCE_TYPES: List[str] = Field(default_factory=lambda: ["youtube"], description="Supported source types")
+    DEFAULT_RUNTIME_DURATION: int = Field(default=-1, description="Default runtime duration in minutes, -1 for indefinite")
     
     @model_validator(mode='after')
     def validate_settings(self) -> 'PipelineSettings':

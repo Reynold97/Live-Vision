@@ -1,332 +1,256 @@
-# Live-Vision Deployment Guide
+# Live-Vision: YouTube Stream Analysis Platform
 
-This guide explains how to deploy the Live-Vision project on a Linux server from scratch. The project consists of a FastAPI backend and a React frontend for real-time YouTube stream analysis using Google's Gemini Vision API.
+Live-Vision is a powerful application for real-time YouTube stream analysis using Google's Gemini Vision API. The platform segments YouTube videos and livestreams into chunks, analyzes the visual content with advanced AI, and displays the results in a responsive web interface.
+
+## Features
+
+- **Real-time YouTube Stream Analysis**: Process and analyze YouTube videos and livestreams in real-time
+- **Multi-Pipeline Processing**: Run multiple analysis pipelines concurrently
+- **Advanced AI Vision Analysis**: Leverage Google's Gemini Vision API for deep visual understanding
+- **WebSocket-Based Real-Time Updates**: Get analysis results as they become available
+- **Configurable Analysis Parameters**: Customize chunk duration, analysis prompts, and more
+- **Web Search Enhancement**: Option to use web search to enrich analysis results
+- **Environment-Aware Configuration**: Different setups for development and production
+- **Cookie-Based Authentication**: Access private or restricted YouTube content
+
+## Architecture
+
+The project consists of two main components:
+
+### Backend (Python/FastAPI)
+
+- **Core**: Configuration, state management, and pipeline coordination
+- **Recorder**: YouTube video downloading and segmentation using yt-dlp and FFmpeg
+- **Analyzer**: Integration with Google's Gemini Vision API
+- **API**: FastAPI endpoints and WebSocket communication
+
+### Frontend (React)
+
+- **Modern UI**: Clean, responsive dashboard for controlling and monitoring analyses
+- **Real-time Updates**: Live analysis results via WebSocket connection
+- **Pipeline Visualization**: Visual representation of pipeline states and progress
+- **Advanced Controls**: Customizable analysis options and settings
 
 ## Project Structure
 
-The deployed project should have this structure:
 ```
 /opt/live-vision/
 ├── env/                  # Python virtual environment
 ├── src/                  # Backend source code
-│   ├── analyzer/        # Gemini Vision analysis
-│   ├── api/            # FastAPI endpoints
-│   ├── pipeline/       # Video processing pipeline
-│   └── recorder/       # YouTube stream handling
+│   ├── analyzer/         # Gemini Vision analysis
+│   ├── api/              # FastAPI endpoints
+│   ├── core/             # Core configuration and management
+│   ├── pipeline/         # Video processing pipeline
+│   └── recorder/         # YouTube stream handling
 ├── frontend/            
-│   ├── dist/            # Built frontend files
-│   └── node_modules/    # Frontend dependencies
-├── data/                # Video chunks directory
-├── .env                 # Environment variables
-└── requirements.txt     # Python dependencies
+│   ├── dist/             # Built frontend files
+│   └── node_modules/     # Frontend dependencies
+├── data/                 # Video chunks directory
+├── cookies/              # YouTube cookies for authentication
+├── .env                  # Environment variables
+└── requirements.txt      # Python dependencies
 ```
 
 ## Prerequisites
 
-### System Requirements
-- Linux server (Ubuntu 20.04 or later recommended)
 - Python 3.9 or later
 - Node.js 18 or later
-- npm 9 or later
 - FFmpeg
 - yt-dlp
 - Google Gemini API key
 
-## Deployment Steps
+## Installation
 
-### 1. Initial Server Setup
-
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install Python dependencies
-sudo apt install python3-pip python3-venv -y
-
-# Install Node.js and npm
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install nodejs -y
-
-# Install FFmpeg
-sudo apt install ffmpeg -y
-
-# Install yt-dlp
-sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-sudo chmod a+rx /usr/local/bin/yt-dlp
-
-### 2. Clone and Set Up Project
+### 1. Clone the Repository
 
 ```bash
-# Clone the repository
 git clone https://github.com/Reynold97/Live-Vision.git
+cd Live-Vision
+```
 
+### 2. Backend Setup
+
+```bash
 # Create and activate virtual environment
-python3 -m venv env
-source env/bin/activate
+python -m venv env
+source env/bin/activate  # On Windows: env\Scripts\activate
 
-# Install Python dependencies
+# Install dependencies
 pip install -r requirements.txt
+```
 
-# Setup frontend
+### 3. Frontend Setup
+
+```bash
 cd frontend
 npm install
-npm install lucide-react react-markdown
 npm run build
 cd ..
 ```
 
-### 3. Environment Setup
+### 4. Environment Configuration
 
 Create a `.env` file in the project root:
 
-```bash
-# Create and edit .env file
-nano .env
 ```
-
-Add the following content:
-```env
+# Required
 GOOGLE_API_KEY=your_gemini_api_key
+
+# Optional but recommended
+ENVIRONMENT=development  # or 'production' for production deployments
+
+# Pipeline settings
+MAX_CONCURRENT_PIPELINES=3
+DEFAULT_CHUNK_DURATION=30
+MIN_CHUNK_DURATION=10
+MAX_CHUNK_DURATION=300
+
+# Analysis settings
+USE_WEB_SEARCH=true
+EXPORT_RESPONSES=true
 ```
 
-### 4. Setup Systemd Service for Backend
+## YouTube Authentication Setup
 
-Create a service file for the backend:
+The application can access private or region-restricted YouTube content using cookies from an authenticated browser session.
+
+### Development Mode
+
+In development mode, the application works with public videos without requiring cookie authentication. Set `ENVIRONMENT=development` in your `.env` file for this behavior.
+
+### Production Mode
+
+For production deployments or to access private content:
+
+1. **Extract Cookies from Your Browser**:
+   - Install a browser extension like "Get cookies.txt" ([Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) or [Firefox](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/))
+   - Go to YouTube and log in to your account
+   - Use the extension to export cookies for youtube.com
+   - Save the file as `youtube.txt`
+
+2. **Add Cookies to the Application**:
+   - Create a `cookies` directory in your home folder (`~/cookies` or `/root/cookies`)
+   - Place the `youtube.txt` file in this directory
+   - Ensure proper permissions: `chmod 600 ~/cookies/youtube.txt`
+
+3. **Configure for Production**:
+   - Set `ENVIRONMENT=production` in your `.env` file
+
+## Running the Application
+
+### Development Mode
 
 ```bash
-sudo nano /etc/systemd/system/live-vision.service
-```
+# Start the backend
+python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 
-Add the following content:
-```ini
-[Unit]
-Description=Live-Vision Backend Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/root/Live-Vision
-Environment="PATH=/root/Live-Vision/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-EnvironmentFile=/root/Live-Vision/.env
-ExecStart=/root/Live-Vision/env/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 5. Setup Nginx
-
-```bash
-# Install Nginx
-sudo apt install nginx -y
-
-# Create Nginx configuration
-sudo nano /etc/nginx/sites-available/live-vision
-```
-
-Add the following configuration:
-```nginx
-server {
-    listen 80;
-    server_name http://videoanalyzer.storyface.ai;
-
-    # Frontend
-    location / {
-        root /root/Live-Vision/frontend/dist;
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Backend API
-    location /api/ {
-        proxy_pass http://localhost:8000/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # WebSocket
-    location /ws/ {
-        proxy_pass http://localhost:8000/ws/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-Enable the site:
-```bash
-sudo ln -s /etc/nginx/sites-available/live-vision /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
-### 6. Start Services
-
-```bash
-# Start and enable backend service
-sudo systemctl start live-vision
-sudo systemctl enable live-vision
-
-# Verify status
-sudo systemctl status live-vision
-```
-
-## Maintenance
-
-### Updating the Application
-
-```bash
-# Stop the service
-sudo systemctl stop live-vision
-
-# Pull new changes
-git pull
-
-# Update backend
-source env/bin/activate
-pip install -r requirements.txt
-
-# Update frontend
+# In a separate terminal, start the frontend dev server
 cd frontend
-npm install
-npm run build
-cd ..
+npm run dev
+```
 
-# Restart service
+### Production Mode
+
+```bash
+# Start the backend
+python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+# Or using systemd service (see deployment guide)
 sudo systemctl start live-vision
 ```
 
-### Logs
+## Usage
 
-View backend logs:
-```bash
-sudo journalctl -u live-vision -f
-```
+1. **Access the Dashboard**:
+   - Open your browser to `http://localhost:8000` (development) or your server address (production)
 
-### Common Issues
+2. **Start an Analysis**:
+   - Enter a YouTube video or livestream URL
+   - Set the chunk duration (in seconds)
+   - Configure advanced options if needed
+   - Click "Start Analysis"
 
-1. Permission Issues:
-```bash
-# Fix data directory permissions
-sudo chown -R your_user:your_group /opt/live-vision/data
-sudo chmod 755 /opt/live-vision/data
-```
+3. **Monitor Pipelines**:
+   - View active pipelines in the dashboard
+   - Track progress and status of each pipeline
+   - Stop pipelines as needed
 
-2. WebSocket Connection Issues:
-- Check Nginx configuration
-- Verify firewall settings: `sudo ufw status`
-
-3. Video Processing Issues:
-- Verify FFmpeg installation: `ffmpeg -version`
-- Check yt-dlp: `yt-dlp --version`
-
-## Security Setup
-
-### 1. SSL/TLS Configuration
-
-```bash
-# Install Certbot
-sudo apt install certbot python3-certbot-nginx -y
-
-# Get SSL certificate
-sudo certbot --nginx -d your_domain.com
-```
-
-### 2. Firewall Configuration
-
-```bash
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-```
-
-## Production Considerations
-
-Before deploying to production:
-
-1. Environment Configuration:
-   - Update frontend environment variables
-   - Set DEBUG=False in backend
-   - Configure proper logging
-
-2. Security Measures:
-   - Enable SSL/TLS
-   - Set up proper firewall rules
-   - Configure rate limiting
-   - Implement authentication if needed
-
-3. Performance Optimization:
-   - Configure Nginx caching
-   - Optimize video chunk size
-   - Monitor system resources
-
-## Requirements Files
-
-### Backend (requirements.txt)
-```
-fastapi
-uvicorn[standard]
-python-dotenv
-google-generativeai
-watchdog
-python-multipart
-aiohttp
-```
-
-### Frontend (.gitignore)
-```gitignore
-# Dependencies
-/node_modules
-/.pnp
-.pnp.js
-
-# Production
-/dist
-/build
-
-# Environment
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-```
+4. **View Analysis Results**:
+   - Analysis results appear in real-time as each video chunk is processed
+   - Results include detailed AI-generated descriptions and observations
 
 ## Troubleshooting
 
-1. Frontend not loading:
-   - Check Nginx configuration
-   - Verify build files in dist directory
-   - Check console for errors
+### YouTube Access Issues
 
-2. Backend connection issues:
-   - Verify service status
-   - Check ports and firewall
-   - Verify WebSocket configuration
+If you're having trouble accessing YouTube content:
 
-3. Video processing issues:
-   - Check FFmpeg installation
-   - Verify yt-dlp is working
-   - Check disk space for chunks
+1. **Check Cookie Configuration**:
+   - Verify the cookie file exists in the correct location
+   - Make sure the cookie file has the correct format
+   - Ensure your YouTube cookies are not expired
 
+2. **Development vs Production**:
+   - Confirm your environment setting matches your needs
+   - Development mode works best with public videos
+   - Production mode requires valid cookies for restricted content
+
+3. **Testing Cookie Functionality**:
+   - Use the included debug script: `python test_cookies.py`
+   - Try accessing videos directly with yt-dlp:
+     ```bash
+     yt-dlp --cookies ~/cookies/youtube.txt -F "https://www.youtube.com/watch?v=YOUR_VIDEO_ID"
+     ```
+
+### WebSocket Connection Issues
+
+If the WebSocket connection fails:
+
+1. Check your CORS settings in the API configuration
+2. Verify that the frontend is connecting to the correct WebSocket URL
+3. Check for any network issues or proxies that might block WebSocket connections
+
+## Maintenance
+
+### Updating Cookie Files
+
+YouTube cookies typically expire after 2-4 weeks. To maintain access to restricted content:
+
+1. Log in to YouTube in your browser again
+2. Export new cookies using the browser extension
+3. Replace the existing `youtube.txt` file
+4. Restart the application if necessary
+
+### Updating yt-dlp
+
+yt-dlp needs to be updated periodically to work with YouTube:
+
+```bash
+pip install -U yt-dlp
+```
+
+## Integration Testing
+
+Run the integration test to verify system functionality:
+
+```bash
+python integration_test.py
+```
+
+This tests:
+- WebSocket broadcasting
+- Pipeline management
+- Error handling
+- Multiple pipeline execution
+
+## License
+
+[MIT License](LICENSE)
+
+## Acknowledgements
+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for YouTube video downloading
+- [FFmpeg](https://ffmpeg.org/) for video processing
+- [Google Gemini API](https://ai.google.dev/) for advanced vision analysis
+- [FastAPI](https://fastapi.tiangolo.com/) for the backend API
+- [React](https://reactjs.org/) for the frontend UI

@@ -74,13 +74,28 @@ class YouTubeChunker:
         """
         self.base_data_folder = base_data_folder
         self.cookies_path = cookies_path or os.path.join(os.path.expanduser("~"), "cookies", "youtube.txt")
-        self.check_cookie_configuration()
+        
+        # Set up logging first
         self._setup_logging()
+        
+        # Check dependencies
         self._check_dependencies()
+        
+        # Initialize properties
         self.active_processes: Dict[str, subprocess.Popen] = {}  # yt-dlp processes
-        self.ffmpeg_processes: Dict[str, subprocess.Popen] = {}  # Add this line to track ffmpeg processes
+        self.ffmpeg_processes: Dict[str, subprocess.Popen] = {}  # Track ffmpeg processes
         self.progress_trackers: Dict[str, ChunkingProgress] = {}
         self.stop_signals: Dict[str, bool] = {}
+        
+        # Check if we're in development mode
+        self.dev_mode = os.getenv("ENVIRONMENT", "").lower() == "development"
+        
+        # Check cookie configuration but don't let it fail initialization
+        try:
+            self.cookie_info = self.check_cookie_configuration()
+        except Exception as e:
+            self.logger.warning(f"Non-critical error checking cookie configuration: {e}")
+            self.cookie_info = {"file_exists": False, "error": str(e)}
         
     def _setup_logging(self):
         """Configure logging for the class."""
@@ -169,38 +184,9 @@ class YouTubeChunker:
             self.stop_signals[url_hash] = False
             
             # Test yt-dlp can access the URL
-            test_cmd = [
-                'yt-dlp', 
-                '--quiet', 
-                '--simulate',
-                '--no-check-certificates',
-                '--extractor-retries', '3',
-                '--force-ipv4'
-            ]
-            
-            # Add cookies if the file exists
-            if os.path.exists(self.cookies_path):
-                test_cmd.extend(['--cookies', self.cookies_path])
-            else:
-                self.logger.warning(f"Cookies file not found at {self.cookies_path}")
-                
-            test_cmd.append(url)
-            
-            try:
-                self.logger.info(f"Testing URL accessibility: {url}")
-                result = subprocess.run(test_cmd, check=True, capture_output=True, text=True)
-                
-                # Check if it's a live stream
-                is_live = False
-                if "is a live stream" in result.stdout:
-                    is_live = True
-                    self.logger.info(f"Detected live stream: {url}")
-                    
-                self.progress_trackers[url_hash].update(is_live=is_live)
-            except subprocess.CalledProcessError as e:
-                self.logger.error(f"Error accessing URL with yt-dlp: {e.stderr}")
-                self.progress_trackers[url_hash].update(error=e)
-                self.progress_trackers[url_hash].status = "failed"
+            is_accessible = self._test_url_accessibility(url, url_hash)
+            if not is_accessible:
+                # The _test_url_accessibility function will raise an appropriate error
                 raise ValueError(f"Could not access URL: {url}")
             
             # Start downloading and segmenting
@@ -282,6 +268,10 @@ class YouTubeChunker:
         # Add cookies if the file exists
         if os.path.exists(self.cookies_path):
             ytdlp_cmd.extend(['--cookies', self.cookies_path])
+        else:
+            # Handle development mode
+            if hasattr(self, 'dev_mode') and self.dev_mode:
+                self.logger.info("Development mode: Downloading without cookies")
             
         ytdlp_cmd.append(url)
         
@@ -613,24 +603,31 @@ class YouTubeChunker:
         """
         cookie_info = {
             "configured_path": self.cookies_path,
-            "expanded_path": os.path.expanduser(self.cookies_path),
+            "expanded_path": os.path.expanduser(self.cookies_path) if self.cookies_path else None,
             "file_exists": False,
             "file_size": 0,
             "file_permissions": None,
-            "readable": False
+            "readable": False,
+            "is_used": False
         }
         
-        try:
-            # Check if file exists
-            if os.path.exists(self.cookies_path):
-                cookie_info["file_exists"] = True
-                cookie_info["file_size"] = os.path.getsize(self.cookies_path)
-                
-                # Check permissions
-                stats = os.stat(self.cookies_path)
-                cookie_info["file_permissions"] = oct(stats.st_mode & 0o777)
-                
-                # Check if readable
+        # First check if the cookies_path is set
+        if not self.cookies_path:
+            self.logger.warning("No cookies path configured")
+            return cookie_info
+            
+        # Check if file exists
+        if os.path.exists(self.cookies_path):
+            cookie_info["file_exists"] = True
+            cookie_info["file_size"] = os.path.getsize(self.cookies_path)
+            cookie_info["is_used"] = True
+            
+            # Check permissions
+            stats = os.stat(self.cookies_path)
+            cookie_info["file_permissions"] = oct(stats.st_mode & 0o777)
+            
+            # Check if readable
+            try:
                 with open(self.cookies_path, 'r') as f:
                     first_line = f.readline().strip()
                     cookie_info["readable"] = True
@@ -638,26 +635,83 @@ class YouTubeChunker:
                 
                 self.logger.info(f"Cookie file found at {self.cookies_path}")
                 self.logger.info(f"Cookie file size: {cookie_info['file_size']} bytes")
-                self.logger.info(f"Cookie file permissions: {cookie_info['file_permissions']}")
+            except Exception as e:
+                self.logger.warning(f"Cookie file exists but can't be read: {e}")
+                cookie_info["error"] = f"File exists but can't be read: {str(e)}"
+        else:
+            # Check if we're in development mode
+            if hasattr(self, 'dev_mode') and self.dev_mode:
+                self.logger.info(f"Development mode: No cookie file at {self.cookies_path} (this is okay for local development)")
             else:
                 self.logger.warning(f"Cookie file not found at {self.cookies_path}")
-                
-                # Check if directory exists
-                cookie_dir = os.path.dirname(self.cookies_path)
-                if not os.path.exists(cookie_dir):
-                    self.logger.warning(f"Cookie directory does not exist: {cookie_dir}")
-                else:
-                    self.logger.info(f"Cookie directory exists: {cookie_dir}")
-                
-                # Check home directory
-                home_dir = os.path.expanduser("~")
-                self.logger.info(f"Home directory is: {home_dir}")
-                
-        except Exception as e:
-            self.logger.error(f"Error checking cookie configuration: {e}")
-            cookie_info["error"] = str(e)
         
         return cookie_info
+    
+    def _test_url_accessibility(self, url: str, url_hash: str) -> bool:
+        """
+        Test if a YouTube URL is accessible using yt-dlp with graceful fallback.
+        
+        Args:
+            url: YouTube URL to test
+            url_hash: Hash of the URL for tracking
+            
+        Returns:
+            bool: True if accessible, False otherwise
+        """
+        # Build command with basic options
+        test_cmd = [
+            'yt-dlp', 
+            '--quiet', 
+            '--simulate',
+            '--no-check-certificates',
+            '--extractor-retries', '3',
+            '--force-ipv4'
+        ]
+        
+        # Add cookies if the file exists
+        if os.path.exists(self.cookies_path):
+            test_cmd.extend(['--cookies', self.cookies_path])
+            self.logger.info(f"Using cookies from {self.cookies_path}")
+        else:
+            if hasattr(self, 'dev_mode') and self.dev_mode:
+                self.logger.info("Development mode: Proceeding without cookies")
+            else:
+                self.logger.warning(f"Cookies file not found at {self.cookies_path}, proceeding without cookies")
+            
+        test_cmd.append(url)
+        
+        try:
+            self.logger.info(f"Testing URL accessibility: {url}")
+            result = subprocess.run(test_cmd, check=True, capture_output=True, text=True)
+            
+            # Check if it's a live stream
+            is_live = False
+            if "is a live stream" in result.stdout:
+                is_live = True
+                self.logger.info(f"Detected live stream: {url}")
+                
+            self.progress_trackers[url_hash].update(is_live=is_live)
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error accessing URL with yt-dlp: {e.stderr}")
+            self.progress_trackers[url_hash].update(error=e)
+            self.progress_trackers[url_hash].status = "failed"
+            
+            # Check for specific errors related to missing cookies
+            if "sign in to view" in e.stderr.lower() or "private video" in e.stderr.lower():
+                if self.dev_mode:
+                    self.logger.warning("Development mode: This video requires authentication. Consider adding cookies for production.")
+                else:
+                    raise ValueError(f"This video requires authentication. Please provide valid cookies.")
+            else:
+                raise ValueError(f"Could not access URL: {url}")
+                
+        except Exception as e:
+            self.logger.error(f"Unexpected error testing URL accessibility: {e}")
+            self.progress_trackers[url_hash].update(error=e)
+            self.progress_trackers[url_hash].status = "failed"
+            raise ValueError(f"Error testing URL accessibility: {e}")
 
 # Example usage:
 if __name__ == "__main__":

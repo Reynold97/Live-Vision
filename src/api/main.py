@@ -62,7 +62,8 @@ class PipelineRequest(BaseModel):
     chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
     analysis_prompt: Optional[str] = None
     use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH
-    export_responses: Optional[bool] = None  # Added field for controlling response export
+    export_responses: Optional[bool] = None  
+    runtime_duration: int = settings.PIPELINE.DEFAULT_RUNTIME_DURATION 
     
     @model_validator(mode='after')
     def validate_duration(self) -> 'PipelineRequest':
@@ -81,6 +82,7 @@ class LegacyAnalysisRequest(BaseModel):
     url: str
     chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
     export_responses: Optional[bool] = None  # Added field for controlling response export
+    runtime_duration: int = settings.PIPELINE.DEFAULT_RUNTIME_DURATION
     
     @model_validator(mode='after')
     def validate_fields(self) -> 'LegacyAnalysisRequest':
@@ -159,7 +161,8 @@ async def create_pipeline(request: PipelineRequest):
             chunk_duration=request.chunk_duration,
             analysis_prompt=request.analysis_prompt,
             use_web_search=request.use_web_search,
-            export_responses=request.export_responses
+            export_responses=request.export_responses,
+            runtime_duration=request.runtime_duration
         )
         
         return {
@@ -246,7 +249,8 @@ async def start_analysis_legacy(request: LegacyAnalysisRequest):
             chunk_duration=request.chunk_duration,
             analysis_prompt=settings.ANALYSIS.DEFAULT_ANALYSIS_PROMPT,
             use_web_search=settings.ANALYSIS.USE_WEB_SEARCH,
-            export_responses=request.export_responses
+            export_responses=request.export_responses,
+            runtime_duration=request.runtime_duration
         )
         
         # Start pipeline
@@ -332,7 +336,8 @@ async def get_settings():
             "min_chunk_duration": settings.PIPELINE.MIN_CHUNK_DURATION,
             "max_chunk_duration": settings.PIPELINE.MAX_CHUNK_DURATION,
             "max_concurrent_pipelines": settings.PIPELINE.MAX_CONCURRENT_PIPELINES,
-            "supported_source_types": settings.PIPELINE.SUPPORTED_SOURCE_TYPES
+            "supported_source_types": settings.PIPELINE.SUPPORTED_SOURCE_TYPES,
+            "default_runtime_duration": settings.PIPELINE.DEFAULT_RUNTIME_DURATION
         },
         "analysis": {
             "use_web_search": settings.ANALYSIS.USE_WEB_SEARCH,

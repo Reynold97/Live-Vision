@@ -117,10 +117,11 @@ class PipelineManager:
         return source
         
     async def create_pipeline(self, source: StreamSource, 
-                            chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION,
-                            analysis_prompt: Optional[str] = None,
-                            use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH,
-                            export_responses: Optional[bool] = None) -> str:
+                        chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION,
+                        analysis_prompt: Optional[str] = None,
+                        use_web_search: bool = settings.ANALYSIS.USE_WEB_SEARCH,
+                        export_responses: Optional[bool] = None,
+                        runtime_duration: int = settings.PIPELINE.DEFAULT_RUNTIME_DURATION) -> str:
         """
         Create a new pipeline for a source.
         
@@ -130,6 +131,7 @@ class PipelineManager:
             analysis_prompt: Prompt for analysis
             use_web_search: Whether to use web search
             export_responses: Whether to export full responses to files (overrides settings)
+            runtime_duration: Duration in minutes for the pipeline to run, -1 for indefinite
             
         Returns:
             Pipeline ID
@@ -182,7 +184,8 @@ class PipelineManager:
                 "state_machine": state_machine,
                 "processed_chunks": set(),
                 "chunk_queue": asyncio.Queue(),
-                "stats": PipelineStats()
+                "stats": PipelineStats(),
+                "runtime_duration": runtime_duration  # Added field for runtime duration
             }
             
             # Store pipeline data
@@ -349,6 +352,15 @@ class PipelineManager:
         output_dir = pipeline["output_dir"]
         chunk_queue = pipeline["chunk_queue"]
         processed_chunks = pipeline["processed_chunks"]
+        runtime_duration = pipeline.get("runtime_duration", -1)
+        
+        # Create a task to handle automatic stopping if runtime_duration is not -1
+        auto_stop_task = None
+        if runtime_duration > 0:
+            # Convert minutes to seconds for the sleep duration
+            stop_delay = runtime_duration * 60
+            self.logger.info(f"Pipeline {pipeline_id} will automatically stop after {runtime_duration} minutes")
+            auto_stop_task = asyncio.create_task(self._auto_stop_pipeline(pipeline_id, stop_delay))
         
         # Setup file system monitoring
         from watchdog.observers import Observer
@@ -436,6 +448,15 @@ class PipelineManager:
                 "error": str(e)
             })
         finally:
+            
+            # Cancel auto-stop task if it exists
+            if auto_stop_task and not auto_stop_task.done():
+                auto_stop_task.cancel()
+                try:
+                    await auto_stop_task
+                except asyncio.CancelledError:
+                    pass
+            
             # Always ensure we attempt to stop the chunking process
             if state_machine.get_current_state() in [PipelineState.STOPPING, PipelineState.STOPPED]:
                 try:
@@ -600,3 +621,28 @@ class PipelineManager:
         except Exception as e:
             self.logger.error(f"Analysis process error for pipeline {pipeline_id}: {e}")
             raise
+        
+    async def _auto_stop_pipeline(self, pipeline_id: str, delay_seconds: float) -> None:
+        """
+        Automatically stop a pipeline after a delay.
+        
+        Args:
+            pipeline_id: ID of the pipeline to stop
+            delay_seconds: Delay in seconds before stopping
+        """
+        try:
+            self.logger.info(f"Auto-stop scheduled for pipeline {pipeline_id} in {delay_seconds} seconds")
+            await asyncio.sleep(delay_seconds)
+            
+            # Check if pipeline is still running before stopping
+            if pipeline_id in self.pipelines:
+                pipeline = self.pipelines[pipeline_id]
+                state_machine = pipeline["state_machine"]
+                
+                if state_machine.is_active():
+                    self.logger.info(f"Auto-stopping pipeline {pipeline_id} after runtime duration")
+                    await self.stop_pipeline(pipeline_id)
+        except asyncio.CancelledError:
+            self.logger.info(f"Auto-stop for pipeline {pipeline_id} was cancelled")
+        except Exception as e:
+            self.logger.error(f"Error in auto-stop for pipeline {pipeline_id}: {e}")

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, Upload, Info, Play, StopCircle, AlertCircle, RefreshCw, Settings, ChevronDown, ChevronUp, Cpu, Sparkles } from 'lucide-react';
+import { Loader2, Upload, Info, Play, StopCircle, AlertCircle, RefreshCw, Settings, ChevronDown, ChevronUp, Cpu, Sparkles, Clock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import './App.css';
 import PipelineVisualizer from './components/PipelineVisualizer';
@@ -16,6 +16,7 @@ function App() {
   const [error, setError] = useState(null);
   const [url, setUrl] = useState('');
   const [duration, setDuration] = useState(30);
+  const [runtimeDuration, setRuntimeDuration] = useState(-1); // Default to indefinite
   const [useWebSearch, setUseWebSearch] = useState(true);
   const [customPrompt, setCustomPrompt] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -140,6 +141,10 @@ function App() {
           if (data.analysis && data.analysis.use_web_search !== undefined) {
             setUseWebSearch(data.analysis.use_web_search);
           }
+          // Initialize runtime duration with backend default
+          if (data.pipeline && data.pipeline.default_runtime_duration !== undefined) {
+            setRuntimeDuration(data.pipeline.default_runtime_duration);
+          }
         }
       } catch (err) {
         console.error('Error fetching settings:', err);
@@ -208,7 +213,8 @@ function App() {
         body: JSON.stringify({
           url: url,
           chunk_duration: duration,
-          export_responses: true
+          export_responses: true,
+          runtime_duration: runtimeDuration // Add runtime duration
         }),
       });
 
@@ -265,7 +271,8 @@ function App() {
             source_id: sourceId,
             chunk_duration: duration,
             analysis_prompt: customPrompt || undefined,
-            use_web_search: useWebSearch
+            use_web_search: useWebSearch,
+            runtime_duration: runtimeDuration // Add runtime duration
           }),
         });
 
@@ -394,6 +401,16 @@ function App() {
     return stateColors[state] || 'bg-gray-500';
   };
 
+  // Format runtime duration for display
+  const formatRuntimeDuration = (minutes) => {
+    if (minutes === -1) return "Indefinite";
+    if (minutes < 60) return `${minutes} minutes`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes === 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
+    return `${hours} hour${hours > 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''}`;
+  };
+
   const filteredPipelines = getFilteredPipelines();
 
   return (
@@ -483,6 +500,34 @@ function App() {
                         <Sparkles size={16} className="icon" />
                         Use web search for enhanced analysis
                       </label>
+                    </div>
+
+                    <div className="form-group">
+                      <label htmlFor="runtimeDuration" className="flex items-center gap-2">
+                        <Clock size={16} className="icon" />
+                        Runtime Duration:
+                      </label>
+                      <select
+                        id="runtimeDuration"
+                        value={runtimeDuration}
+                        onChange={(e) => setRuntimeDuration(Number(e.target.value))}
+                        className="input-field"
+                        disabled={isLoading}
+                      >
+                        <option value="-1">Run indefinitely (until manually stopped)</option>
+                        <option value="5">5 minutes</option>
+                        <option value="10">10 minutes</option>
+                        <option value="15">15 minutes</option>
+                        <option value="30">30 minutes</option>
+                        <option value="60">1 hour</option>
+                        <option value="120">2 hours</option>
+                        <option value="180">3 hours</option>
+                        <option value="240">4 hours</option>
+                      </select>
+                      <div className="text-sm mt-1 text-gray-600">
+                        {runtimeDuration > 0 && `Pipeline will automatically stop after ${formatRuntimeDuration(runtimeDuration)}`}
+                        {runtimeDuration === -1 && "Pipeline will run until manually stopped"}
+                      </div>
                     </div>
 
                     <div className="form-group">

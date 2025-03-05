@@ -767,3 +767,30 @@ label {
     width: 950px;
   }
 }
+
+.form-group .icon {
+  color: #4a6fa5;
+}
+
+.form-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.runtime-duration-info {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #666;
+  font-style: italic;
+}
+
+.input-field:focus {
+  outline: none;
+  border-color: #4a6fa5;
+  box-shadow: 0 0 0 2px rgba(74, 111, 165, 0.2);
+}
+
+.input-field option {
+  padding: 8px;
+}

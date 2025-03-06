@@ -794,3 +794,33 @@ label {
 .input-field option {
   padding: 8px;
 }
+
+.results-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pipeline-filter-select {
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+  font-size: 0.8rem;
+  background-color: #f8f9fa;
+  cursor: pointer;
+  width: 350px;
+  max-width: 100%;
+}
+
+.pipeline-filter-select option {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.filtered-count {
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-left: 8px;
+  font-weight: normal;
+}

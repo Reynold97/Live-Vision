@@ -16,7 +16,7 @@ function App() {
   const [error, setError] = useState(null);
   const [url, setUrl] = useState('');
   const [duration, setDuration] = useState(30);
-  const [runtimeDuration, setRuntimeDuration] = useState(-1); // Default to indefinite
+  const [runtimeDuration, setRuntimeDuration] = useState(5); // -1 to indefinite
   const [useWebSearch, setUseWebSearch] = useState(true);
   const [customPrompt, setCustomPrompt] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -25,6 +25,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [systemStatus, setSystemStatus] = useState(null);
   const [showInactivePipelines, setShowInactivePipelines] = useState(false);
+  // New state for selected pipeline results filter
+  const [selectedResultsPipeline, setSelectedResultsPipeline] = useState("all");
 
   const websocket = useRef(null);
   const resultsContainerRef = useRef(null);
@@ -142,9 +144,9 @@ function App() {
             setUseWebSearch(data.analysis.use_web_search);
           }
           // Initialize runtime duration with backend default
-          if (data.pipeline && data.pipeline.default_runtime_duration !== undefined) {
-            setRuntimeDuration(data.pipeline.default_runtime_duration);
-          }
+          //if (data.pipeline && data.pipeline.default_runtime_duration !== undefined) {
+          //  setRuntimeDuration(data.pipeline.default_runtime_duration);
+          //}
         }
       } catch (err) {
         console.error('Error fetching settings:', err);
@@ -196,6 +198,24 @@ function App() {
       );
     }
   };
+
+  // Filter results based on selected pipeline
+  const getFilteredResults = useCallback(() => {
+    if (selectedResultsPipeline === "all") {
+      return analysisResults;
+    }
+    
+    // Find the selected pipeline to get its output directory
+    const selectedPipeline = activePipelines.find(p => p.pipeline_id === selectedResultsPipeline);
+    if (!selectedPipeline) {
+      return analysisResults; // Fallback to all results if pipeline not found
+    }
+    
+    // Filter results that contain the output directory path in their chunk_path
+    return analysisResults.filter(result => 
+      result.chunk_path && result.chunk_path.includes(selectedPipeline.output_dir)
+    );
+  }, [analysisResults, selectedResultsPipeline, activePipelines]);
 
   // Start analysis with the new API
   const handleStartAnalysis = async (e) => {
@@ -642,16 +662,38 @@ function App() {
           <div className="right-panel">
             <div className="results-section">
               <div className="results-header">
-                <h2><Info size={20} className="panel-icon" /> Analysis Results</h2>
-                {analysisResults.length > 0 && (
-                  <button 
-                    className="clear-results-button"
-                    onClick={() => setAnalysisResults([])}
+                <h2>
+                  <Info size={20} className="panel-icon" /> 
+                  Analysis Results
+                  {selectedResultsPipeline !== "all" && (
+                    <span className="filtered-count">
+                      ({getFilteredResults().length}/{analysisResults.length})
+                    </span>
+                  )}
+                </h2>
+                <div className="results-controls">
+                  <select 
+                    className="pipeline-filter-select"
+                    value={selectedResultsPipeline}
+                    onChange={(e) => setSelectedResultsPipeline(e.target.value)}
                   >
-                    <RefreshCw size={16} />
-                    Clear
-                  </button>
-                )}
+                    <option value="all">All Pipelines</option>
+                    {filteredPipelines.map(pipeline => (
+                    <option key={pipeline.pipeline_id} value={pipeline.pipeline_id} title={pipeline.url}>
+                      {pipeline.url}
+                    </option>
+                    ))}
+                  </select>
+                  {analysisResults.length > 0 && (
+                    <button 
+                      className="clear-results-button"
+                      onClick={() => setAnalysisResults([])}
+                    >
+                      <RefreshCw size={16} />
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
               
               <div className="results-container" ref={resultsContainerRef}>
@@ -662,7 +704,7 @@ function App() {
                   </div>
                 ) : (
                   <div className="results-list">
-                    {analysisResults.map((result, index) => (
+                    {getFilteredResults().map((result, index) => (
                       <div key={index} className="result-item">
                         <div className="result-timestamp">
                           {new Date(result.timestamp).toLocaleTimeString()}

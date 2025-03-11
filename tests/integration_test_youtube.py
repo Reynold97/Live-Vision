@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from src.core.config import settings, initialize_logger
 from src.core.state_machine import PipelineState
 from src.core.pipeline_manager import PipelineManager, StreamSource
-from src.recorder.stream_recorder import YouTubeChunker
+from src.recorder.youtube_recorder import YouTubeChunker
 from src.analyzer.gemini_analyzer import GeminiVideoAnalyzer
 from src.api.websocket_manager import manager
 
@@ -343,7 +343,7 @@ async def main():
     """Run all integration tests with a single YouTube URL."""
     try:
         # Default to a popular live stream if no URL is provided
-        default_url = "https://www.youtube.com/watch?v=QfDysU5eyM4" 
+        default_url = "https://www.youtube.com/watch?v=LPmbtKSwN6E" 
         
         # Check if URL is provided as command line argument
         if len(sys.argv) > 1:

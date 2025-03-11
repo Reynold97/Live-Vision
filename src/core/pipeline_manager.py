@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field
 
 from .state_machine import PipelineStateMachine, PipelineState, StateChangeEvent
 from ..analyzer.gemini_analyzer import GeminiVideoAnalyzer
-from ..recorder.stream_recorder import YouTubeChunker
+from ..recorder.youtube_recorder import YouTubeChunker
+from ..recorder.m3u8_recorder import M3U8Chunker
+from ..recorder.base_recorder import BaseStreamRecorder
 from ..core.config import settings
 
 class StreamSource(BaseModel):
@@ -87,6 +89,23 @@ class PipelineManager:
         # Locks for thread safety
         self._pipeline_lock = asyncio.Lock()
         
+    def _get_recorder_for_source_type(self, source_type: str) -> BaseStreamRecorder:
+        """
+        Factory method to get the appropriate recorder for a source type.
+        
+        Args:
+            source_type: Type of source ("youtube", "m3u8", etc.)
+            
+        Returns:
+            BaseStreamRecorder: An appropriate recorder instance
+        """
+        if source_type == "youtube":
+            return YouTubeChunker(base_data_folder=self.base_data_dir)
+        elif source_type == "m3u8":
+            return M3U8Chunker(base_data_folder=self.base_data_dir)
+        else:
+            raise ValueError(f"Unsupported source type: {source_type}")
+        
     async def register_source(self, url: str, source_type: str = "youtube", 
                             metadata: Optional[Dict[str, Any]] = None) -> StreamSource:
         """
@@ -140,8 +159,8 @@ class PipelineManager:
             # Create a unique pipeline ID
             pipeline_id = str(uuid.uuid4())
             
-            # Initialize components
-            chunker = YouTubeChunker(base_data_folder=self.base_data_dir)
+            # Initialize components - get appropriate recorder based on source type
+            chunker = self._get_recorder_for_source_type(source.source_type)
             
             # Determine if we should export responses
             should_export = export_responses if export_responses is not None else settings.ANALYSIS.EXPORT_RESPONSES

@@ -31,12 +31,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def validate_youtube_url(url: str) -> bool:
-    """Validate YouTube URL format."""
-    patterns = [
-        r'^(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$',
-    ]
-    return any(re.match(pattern, url) for pattern in patterns)
+def validate_url(url: str, source_type: str) -> bool:
+    """Validate URL format based on source type."""
+    if source_type == "youtube":
+        patterns = [
+            r'^(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$',
+        ]
+        return any(re.match(pattern, url) for pattern in patterns)
+    elif source_type == "m3u8":
+        # Basic validation for m3u8 URLs
+        return url.startswith(('http://', 'https://')) and (url.endswith('.m3u8') or '.m3u8' in url)
+    else:
+        return False
 
 # Models
 class SourceRequest(BaseModel):
@@ -46,9 +52,9 @@ class SourceRequest(BaseModel):
     
     @model_validator(mode='after')
     def validate_fields(self) -> 'SourceRequest':
-        # Validate URL
-        if not validate_youtube_url(self.url):
-            raise ValueError("Invalid YouTube URL format")
+        # Validate URL based on source type
+        if not validate_url(self.url, self.source_type):
+            raise ValueError(f"Invalid URL format for {self.source_type}")
         
         # Validate source type
         valid_types = settings.PIPELINE.SUPPORTED_SOURCE_TYPES

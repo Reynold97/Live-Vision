@@ -1,4 +1,4 @@
-# src/recorder/stream_recorder.py
+from .base_recorder import BaseStreamRecorder, ChunkingProgress
 import subprocess
 import os
 import shutil
@@ -12,56 +12,7 @@ from typing import Optional, Dict, Any, List, Callable
 import asyncio
 import threading
 
-class ChunkingProgress:
-    """Tracks the progress of a chunking operation."""
-    
-    def __init__(self):
-        self.start_time = time.time()
-        self.chunks_created = 0
-        self.last_chunk_time = time.time()
-        self.errors = 0
-        self.status = "initialized"  # initialized, running, completed, failed
-        self.last_error = None
-        self.is_live = False
-        self.chunk_timestamps = {}  # chunk filename -> creation timestamp
-        
-    def update(self, new_chunk: bool = False, chunk_name: Optional[str] = None, 
-               error: Optional[Exception] = None, is_live: Optional[bool] = None) -> None:
-        """Update progress information."""
-        if new_chunk and chunk_name:
-            self.chunks_created += 1
-            self.last_chunk_time = time.time()
-            self.chunk_timestamps[chunk_name] = time.time()
-            
-        if error:
-            self.errors += 1
-            self.last_error = str(error)
-            
-        if is_live is not None:
-            self.is_live = is_live
-            
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status as a dictionary."""
-        return {
-            "start_time": self.start_time,
-            "elapsed_time": time.time() - self.start_time,
-            "chunks_created": self.chunks_created,
-            "last_chunk_time": self.last_chunk_time,
-            "time_since_last_chunk": time.time() - self.last_chunk_time,
-            "errors": self.errors,
-            "last_error": self.last_error,
-            "status": self.status,
-            "is_live": self.is_live,
-            "chunk_count": len(self.chunk_timestamps)
-        }
-        
-    def get_chunk_age(self, chunk_name: str) -> Optional[float]:
-        """Get the age of a chunk in seconds."""
-        if chunk_name in self.chunk_timestamps:
-            return time.time() - self.chunk_timestamps[chunk_name]
-        return None
-
-class YouTubeChunker:
+class YouTubeChunker(BaseStreamRecorder):
     """An enhanced class to download YouTube videos and split them into chunks."""
     
     def __init__(self, base_data_folder="data", cookies_path=None):

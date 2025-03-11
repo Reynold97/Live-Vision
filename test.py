@@ -1,6 +1,6 @@
 import os
 import asyncio
-from src.recorder.stream_recorder import YouTubeChunker
+from src.recorder.youtube_recorder import YouTubeChunker
 from src.analyzer.gemini_analyzer import GeminiVideoAnalyzer
 from src.pipeline.video_pipeline import VideoPipeline
 from dotenv import load_dotenv

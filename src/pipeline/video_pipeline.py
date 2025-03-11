@@ -267,7 +267,7 @@ class VideoPipeline:
 # Example usage:
 if __name__ == "__main__":
     import os
-    from src.recorder.stream_recorder import YouTubeChunker
+    from src.recorder.youtube_recorder import YouTubeChunker
     from src.analyzer.gemini_analyzer import GeminiVideoAnalyzer
     
     async def main():

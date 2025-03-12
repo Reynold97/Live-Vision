@@ -113,27 +113,33 @@ class PipelineManager:
         
         Args:
             url: Stream URL
-            source_type: Type of source ("youtube", "tv", etc.)
+            source_type: Type of source ("youtube", "m3u8", etc.)
             metadata: Additional metadata
             
         Returns:
             The created StreamSource object
         """
-        source_id = str(uuid.uuid4())
-        source = StreamSource(
-            source_id=source_id, 
-            url=url, 
-            source_type=source_type, 
-            metadata=metadata or {}
-        )
-        
-        # If this is a new source, prepare its directory
-        source_dir = os.path.join(self.base_data_dir, source_id)
-        os.makedirs(source_dir, exist_ok=True)
-        
-        self.logger.info(f"Registered new source: {source_id} ({source_type}) - {url}")
-        
-        return source
+        try:
+            self.logger.info(f"Registering new source - URL: {url}, type: {source_type}")
+            
+            source_id = str(uuid.uuid4())
+            source = StreamSource(
+                source_id=source_id, 
+                url=url, 
+                source_type=source_type, 
+                metadata=metadata or {}
+            )
+            
+            # If this is a new source, prepare its directory
+            source_dir = os.path.join(self.base_data_dir, source_id)
+            os.makedirs(source_dir, exist_ok=True)
+            
+            self.logger.info(f"Registered new source: {source_id} ({source_type}) - {url}")
+            
+            return source
+        except Exception as e:
+            self.logger.error(f"Error registering source: {e}", exc_info=True)
+            raise
         
     async def create_pipeline(self, source: StreamSource, 
                         chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION,
@@ -346,7 +352,23 @@ class PipelineManager:
         Returns:
             List of pipeline status dictionaries
         """
-        return [await self.get_pipeline_status(pipeline_id) for pipeline_id in self.pipelines]
+        #return [await self.get_pipeline_status(pipeline_id) for pipeline_id in self.pipelines]        
+        try:
+            statuses = []
+            for pipeline_id in self.pipelines:
+                try:
+                    status = await self.get_pipeline_status(pipeline_id)
+                    if status:
+                        statuses.append(status)
+                except Exception as e:
+                    self.logger.error(f"Error getting status for pipeline {pipeline_id}: {e}")
+                    # Continue with other pipelines
+                    
+            return statuses
+        except Exception as e:
+            self.logger.error(f"Error getting all pipeline statuses: {e}", exc_info=True)
+            # Return empty list on error
+            return []
         
     async def _run_pipeline(self, pipeline_id: str) -> None:
         """

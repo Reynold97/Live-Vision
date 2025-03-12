@@ -6,12 +6,16 @@ import re
 import os
 import asyncio
 import json 
+import traceback
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from .websocket_manager import manager
 from ..core.pipeline_manager import PipelineManager, StreamSource
-from ..core.config import settings
+from ..core.config import settings, initialize_logger
+
+# Setup logging
+logger = initialize_logger()
 
 # Initialize the pipeline manager as a global singleton
 pipeline_manager = PipelineManager(
@@ -84,6 +88,7 @@ class PipelineRequest(BaseModel):
 class PipelineActionRequest(BaseModel):
     pipeline_id: str
 
+'''
 class LegacyAnalysisRequest(BaseModel):
     url: str
     chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
@@ -93,7 +98,7 @@ class LegacyAnalysisRequest(BaseModel):
     @model_validator(mode='after')
     def validate_fields(self) -> 'LegacyAnalysisRequest':
         # Validate URL
-        if not validate_youtube_url(self.url):
+        if not validate_url(self.url):
             raise ValueError("Invalid YouTube URL format")
             
         # Validate chunk duration
@@ -104,6 +109,7 @@ class LegacyAnalysisRequest(BaseModel):
                 f"and {settings.PIPELINE.MAX_CHUNK_DURATION} seconds"
             )
         return self
+'''
 
 # Routes
 @app.websocket("/ws/analysis")
@@ -119,11 +125,18 @@ async def websocket_endpoint(websocket: WebSocket):
 async def create_source(request: SourceRequest):
     """Register a new streaming source."""
     try:
+        # Log the full request data
+        logger.info(f"Registering new source - URL: {request.url}, type: {request.source_type}")
+        logger.debug(f"Full source request data: {request.model_dump_json()}")
+        
         source = await pipeline_manager.register_source(
             url=request.url,
             source_type=request.source_type,
             metadata=request.metadata
         )
+        
+        logger.info(f"Source registered successfully: {source.source_id}")
+        logger.debug(f"Source details: {source.model_dump_json()}")
         
         return {
             "status": "success",
@@ -131,6 +144,10 @@ async def create_source(request: SourceRequest):
             "source": source.model_dump()
         }
     except Exception as e:
+        logger.error(f"Error registering source: {str(e)}", exc_info=True)
+        # Get full traceback for detailed debugging
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources", response_model=List[Dict[str, Any]])
@@ -148,6 +165,10 @@ async def list_sources():
 async def create_pipeline(request: PipelineRequest):
     """Create a new pipeline for a source."""
     try:
+        # Log the full request data
+        logger.info(f"Creating pipeline for source: {request.source_id}")
+        logger.debug(f"Full pipeline request data: {request.model_dump_json()}")
+        
         # Find the source
         source = None
         for pipeline in pipeline_manager.pipelines.values():
@@ -156,6 +177,7 @@ async def create_pipeline(request: PipelineRequest):
                 break
                 
         if not source:
+            logger.error(f"Source not found: {request.source_id}")
             raise HTTPException(
                 status_code=404,
                 detail=f"Source not found: {request.source_id}"
@@ -171,52 +193,76 @@ async def create_pipeline(request: PipelineRequest):
             runtime_duration=request.runtime_duration
         )
         
+        logger.info(f"Pipeline created successfully: {pipeline_id}")
+        
         return {
             "status": "success",
             "message": "Pipeline created successfully",
             "pipeline_id": pipeline_id
         }
     except Exception as e:
+        logger.error(f"Error creating pipeline: {str(e)}", exc_info=True)
+        # Get full traceback for detailed debugging
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/pipelines/{pipeline_id}/start", response_model=Dict[str, Any])
 async def start_pipeline(pipeline_id: str):
     """Start a pipeline."""
     try:
+        logger.info(f"Starting pipeline: {pipeline_id}")
+        
         success = await pipeline_manager.start_pipeline(pipeline_id)
         
         if not success:
+            logger.error(f"Failed to start pipeline: {pipeline_id}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot start pipeline {pipeline_id}"
             )
-            
+        
+        logger.info(f"Pipeline started successfully: {pipeline_id}")
+        
         return {
             "status": "success",
             "message": "Pipeline started successfully",
             "pipeline_id": pipeline_id
         }
     except Exception as e:
+        logger.error(f"Error starting pipeline: {str(e)}", exc_info=True)
+        # Get full traceback for detailed debugging
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/pipelines/{pipeline_id}/stop", response_model=Dict[str, Any])
 async def stop_pipeline(pipeline_id: str):
     """Stop a pipeline."""
     try:
+        logger.info(f"Stoping pipeline: {pipeline_id}")
+        
         success = await pipeline_manager.stop_pipeline(pipeline_id)
         
         if not success:
+            logger.error(f"Failed to stop pipeline: {pipeline_id}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot stop pipeline {pipeline_id}"
             )
-            
+        
+        logger.info(f"Pipeline stoped successfully: {pipeline_id}")
+          
         return {
             "status": "success",
             "message": "Pipeline stop signal sent",
             "pipeline_id": pipeline_id
         }
     except Exception as e:
+        logger.error(f"Error starting pipeline: {str(e)}", exc_info=True)
+        # Get full traceback for detailed debugging
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")    
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pipelines/{pipeline_id}", response_model=Dict[str, Any])
@@ -237,6 +283,7 @@ async def list_pipelines():
     """List all pipelines."""
     return await pipeline_manager.get_all_pipeline_statuses()
 
+'''
 # Backward compatibility with original API
 @app.post("/start-analysis")
 async def start_analysis_legacy(request: LegacyAnalysisRequest):
@@ -298,6 +345,7 @@ async def stop_analysis_legacy(request: LegacyAnalysisRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+'''
 
 # Health check endpoint
 @app.get("/health")

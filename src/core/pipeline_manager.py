@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 import time 
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Union
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -74,6 +74,9 @@ class PipelineManager:
         self.max_concurrent_pipelines = max_concurrent_pipelines
         self.api_key = api_key or settings.ANALYSIS.GOOGLE_API_KEY or os.getenv("GOOGLE_API_KEY")
         
+        # Sources dictionary: source_id -> StreamSource objects
+        self.sources: Dict[str, StreamSource] = {}
+    
         # Pipelines dictionary: pipeline_id -> pipeline objects
         self.pipelines: Dict[str, Dict[str, Any]] = {}
         
@@ -88,6 +91,7 @@ class PipelineManager:
         
         # Locks for thread safety
         self._pipeline_lock = asyncio.Lock()
+        self._source_lock = asyncio.Lock()
         
     def _get_recorder_for_source_type(self, source_type: str) -> BaseStreamRecorder:
         """
@@ -107,17 +111,9 @@ class PipelineManager:
             raise ValueError(f"Unsupported source type: {source_type}")
         
     async def register_source(self, url: str, source_type: str = "youtube", 
-                            metadata: Optional[Dict[str, Any]] = None) -> StreamSource:
+                          metadata: Optional[Dict[str, Any]] = None) -> StreamSource:
         """
         Register a new streaming source.
-        
-        Args:
-            url: Stream URL
-            source_type: Type of source ("youtube", "m3u8", etc.)
-            metadata: Additional metadata
-            
-        Returns:
-            The created StreamSource object
         """
         try:
             self.logger.info(f"Registering new source - URL: {url}, type: {source_type}")
@@ -134,12 +130,53 @@ class PipelineManager:
             source_dir = os.path.join(self.base_data_dir, source_id)
             os.makedirs(source_dir, exist_ok=True)
             
+            # Store the source in our dictionary (with lock for thread safety)
+            async with self._source_lock:
+                self.sources[source_id] = source
+            
             self.logger.info(f"Registered new source: {source_id} ({source_type}) - {url}")
             
             return source
         except Exception as e:
             self.logger.error(f"Error registering source: {e}", exc_info=True)
             raise
+        
+    async def get_source(self, source_id: str) -> Optional[StreamSource]:
+        """
+        Get a specific source by ID.
+        
+        Args:
+            source_id: ID of the source to get
+            
+        Returns:
+            StreamSource or None if not found
+        """
+        return self.sources.get(source_id)
+
+    async def get_all_sources(self) -> List[StreamSource]:
+        """
+        Get all registered sources.
+        
+        Returns:
+            List of StreamSource objects
+        """
+        return list(self.sources.values())
+    
+    async def delete_source(self, source_id: str) -> bool:
+        """
+        Delete a source and return whether it was found.
+        
+        Args:
+            source_id: ID of the source to delete
+            
+        Returns:
+            True if the source was found and deleted, False otherwise
+        """
+        async with self._source_lock:
+            if source_id in self.sources:
+                del self.sources[source_id]
+                return True
+            return False
         
     async def create_pipeline(self, source: StreamSource, 
                         chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION,
@@ -162,6 +199,16 @@ class PipelineManager:
             Pipeline ID
         """
         async with self._pipeline_lock:
+            
+            # If source is a string (source_id), look it up in our sources dictionary
+            if isinstance(source, str):
+                source_id = source
+                source = self.sources.get(source_id)
+                
+                if not source:
+                    self.logger.error(f"Source not found: {source_id}")
+                    raise ValueError(f"Source not found: {source_id}")
+            
             # Create a unique pipeline ID
             pipeline_id = str(uuid.uuid4())
             

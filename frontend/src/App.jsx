@@ -25,7 +25,9 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [systemStatus, setSystemStatus] = useState(null);
   const [showInactivePipelines, setShowInactivePipelines] = useState(false);
-  // New state for selected pipeline results filter
+  // New state for source type selection
+  const [sourceType, setSourceType] = useState('youtube');
+  // State for selected pipeline results filter
   const [selectedResultsPipeline, setSelectedResultsPipeline] = useState("all");
 
   const websocket = useRef(null);
@@ -143,10 +145,6 @@ function App() {
           if (data.analysis && data.analysis.use_web_search !== undefined) {
             setUseWebSearch(data.analysis.use_web_search);
           }
-          // Initialize runtime duration with backend default
-          //if (data.pipeline && data.pipeline.default_runtime_duration !== undefined) {
-          //  setRuntimeDuration(data.pipeline.default_runtime_duration);
-          //}
         }
       } catch (err) {
         console.error('Error fetching settings:', err);
@@ -224,125 +222,88 @@ function App() {
     setError(null);
     
     try {
-      // Alternative approach - using the legacy endpoint for better compatibility
-      const startResponse = await fetch(`${config.apiBaseUrl}/start-analysis`, {
+      // 1. Register the source
+      const sourceResponse = await fetch(`${config.apiBaseUrl}/sources`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           url: url,
-          chunk_duration: duration,
-          export_responses: true,
-          runtime_duration: runtimeDuration // Add runtime duration
+          source_type: sourceType, // Use the selected source type
+          metadata: { 
+            added_from: "frontend",
+            timestamp: new Date().toISOString()
+          }
         }),
+      });
+
+      if (!sourceResponse.ok) {
+        const errorData = await sourceResponse.json();
+        throw new Error(errorData.detail || 'Failed to register source');
+      }
+
+      const sourceData = await sourceResponse.json();
+      const sourceId = sourceData.source.source_id;
+      console.log('Source registered with ID:', sourceId);
+
+      // 2. Create a pipeline
+      const pipelineResponse = await fetch(`${config.apiBaseUrl}/pipelines`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          source_id: sourceId,
+          chunk_duration: duration,
+          analysis_prompt: customPrompt || undefined,
+          use_web_search: useWebSearch,
+          runtime_duration: runtimeDuration
+        }),
+      });
+
+      if (!pipelineResponse.ok) {
+        const errorData = await pipelineResponse.json();
+        throw new Error(errorData.detail || 'Failed to create pipeline');
+      }
+
+      const pipelineData = await pipelineResponse.json();
+      const pipelineId = pipelineData.pipeline_id;
+      console.log('Pipeline created with ID:', pipelineId);
+
+      // 3. Start the pipeline
+      const startResponse = await fetch(`${config.apiBaseUrl}/pipelines/${pipelineId}/start`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
       });
 
       if (!startResponse.ok) {
         const errorData = await startResponse.json();
-        throw new Error(errorData.detail || 'Failed to start analysis');
+        throw new Error(errorData.detail || 'Failed to start pipeline');
       }
 
-      const responseData = await startResponse.json();
-      console.log('Analysis started with legacy endpoint:', responseData);
-      
       // Clear previous results when starting a new analysis
       setAnalysisResults([]);
+      console.log('Analysis started successfully with pipeline ID:', pipelineId);
       
-    } catch (legacyErr) {
-      console.log('Legacy endpoint failed, trying new API flow...');
-      
-      try {
-        // 1. Register the source
-        const sourceResponse = await fetch(`${config.apiBaseUrl}/sources`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: url,
-            source_type: "youtube",
-            metadata: { 
-              added_from: "frontend",
-              timestamp: new Date().toISOString()
-            }
-          }),
-        });
-
-        if (!sourceResponse.ok) {
-          const errorData = await sourceResponse.json();
-          throw new Error(errorData.detail || 'Failed to register source');
-        }
-
-        const sourceData = await sourceResponse.json();
-        const sourceId = sourceData.source.source_id;
-        console.log('Source registered with ID:', sourceId);
-
-        // Wait a short time to ensure source is fully registered
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-        // 2. Create a pipeline
-        const pipelineResponse = await fetch(`${config.apiBaseUrl}/pipelines`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            source_id: sourceId,
-            chunk_duration: duration,
-            analysis_prompt: customPrompt || undefined,
-            use_web_search: useWebSearch,
-            runtime_duration: runtimeDuration // Add runtime duration
-          }),
-        });
-
-        if (!pipelineResponse.ok) {
-          const errorData = await pipelineResponse.json();
-          throw new Error(errorData.detail || 'Failed to create pipeline');
-        }
-
-        const pipelineData = await pipelineResponse.json();
-        const pipelineId = pipelineData.pipeline_id;
-        console.log('Pipeline created with ID:', pipelineId);
-
-        // 3. Start the pipeline
-        const startResponse = await fetch(`${config.apiBaseUrl}/pipelines/${pipelineId}/start`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        });
-
-        if (!startResponse.ok) {
-          const errorData = await startResponse.json();
-          throw new Error(errorData.detail || 'Failed to start pipeline');
-        }
-
-        // Clear previous results when starting a new analysis
-        setAnalysisResults([]);
-        console.log('Analysis started successfully with pipeline ID:', pipelineId);
-        
-      } catch (err) {
-        console.error('Error starting analysis with new API:', err);
-        setError(err.message);
-      }
+    } catch (err) {
+      console.error('Error starting analysis:', err);
+      setError(err.message);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Stop a specific pipeline with enhanced reliability
+  // Stop a specific pipeline
   const handleStopPipeline = async (pipelineId) => {
     try {
       // Set pipeline to visually "stopping" status immediately for user feedback
       updatePipelineStatus(pipelineId, { state: "stopping" });
       
-      // Get the pipeline url before we try stopping it
-      const pipeline = activePipelines.find(p => p.pipeline_id === pipelineId);
-      const pipelineUrl = pipeline?.url;
-      
-      // Try the dedicated pipeline stop endpoint
-      console.log(`Stopping pipeline ${pipelineId} via pipeline endpoint`);
+      // Stop the pipeline
+      console.log(`Stopping pipeline ${pipelineId}`);
       const response = await fetch(`${config.apiBaseUrl}/pipelines/${pipelineId}/stop`, {
         method: 'POST',
         headers: {
@@ -352,29 +313,10 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        console.warn(`Primary stop method failed: ${errorData.detail || 'Unknown error'}`);
-        
-        // If we have the URL, try the legacy stop endpoint as fallback
-        if (pipelineUrl) {
-          console.log(`Trying legacy stop endpoint for URL: ${pipelineUrl}`);
-          const legacyResponse = await fetch(`${config.apiBaseUrl}/stop-analysis`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ url: pipelineUrl })
-          });
-          
-          if (!legacyResponse.ok) {
-            throw new Error('Both stop methods failed');
-          }
-          console.log('Pipeline stopped via legacy endpoint');
-        } else {
-          throw new Error('Primary stop failed and URL not available for fallback');
-        }
-      } else {
-        console.log('Pipeline stopped via primary endpoint:', pipelineId);
+        throw new Error(errorData.detail || 'Failed to stop pipeline');
       }
+      
+      console.log('Pipeline stop request sent successfully:', pipelineId);
       
       // Notify user about potential continued streaming
       setError("Pipeline stop requested. Note: Video chunking might continue in the background due to a backend limitation.");
@@ -433,10 +375,17 @@ function App() {
 
   const filteredPipelines = getFilteredPipelines();
 
+  // Helper function to get the placeholder text based on source type
+  const getUrlPlaceholder = () => {
+    return sourceType === 'youtube' 
+      ? "Enter YouTube URL" 
+      : "Enter M3U8 stream URL (e.g., https://example.com/stream.m3u8)";
+  };
+
   return (
     <div className="dashboard">
       <div className="container">
-        <h1>YouTube Stream Analysis Dashboard</h1>
+        <h1>Stream Analysis Dashboard</h1>
         
         <div className="status-panel">
           <div className="status-bar">
@@ -470,14 +419,29 @@ function App() {
             <div className="control-panel">
               <h2><Upload size={20} className="panel-icon" /> Start New Analysis</h2>
               <form onSubmit={handleStartAnalysis}>
+                {/* New source type selector */}
                 <div className="form-group">
-                  <label htmlFor="url">YouTube Stream URL:</label>
+                  <label htmlFor="sourceType">Source Type:</label>
+                  <select
+                    id="sourceType"
+                    value={sourceType}
+                    onChange={(e) => setSourceType(e.target.value)}
+                    className="input-field"
+                    disabled={isLoading}
+                  >
+                    <option value="youtube">YouTube</option>
+                    <option value="m3u8">M3U8 Stream</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="url">Stream URL:</label>
                   <input
                     type="text"
                     id="url"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
-                    placeholder="Enter YouTube URL"
+                    placeholder={getUrlPlaceholder()}
                     required
                     className="input-field"
                     disabled={isLoading}
@@ -544,7 +508,7 @@ function App() {
                         <option value="180">3 hours</option>
                         <option value="240">4 hours</option>
                       </select>
-                      <div className="text-sm mt-1 text-gray-600">
+                      <div className="runtime-duration-info">
                         {runtimeDuration > 0 && `Pipeline will automatically stop after ${formatRuntimeDuration(runtimeDuration)}`}
                         {runtimeDuration === -1 && "Pipeline will run until manually stopped"}
                       </div>

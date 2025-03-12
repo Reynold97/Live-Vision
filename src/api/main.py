@@ -88,29 +88,6 @@ class PipelineRequest(BaseModel):
 class PipelineActionRequest(BaseModel):
     pipeline_id: str
 
-'''
-class LegacyAnalysisRequest(BaseModel):
-    url: str
-    chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
-    export_responses: Optional[bool] = None  # Added field for controlling response export
-    runtime_duration: int = settings.PIPELINE.DEFAULT_RUNTIME_DURATION
-    
-    @model_validator(mode='after')
-    def validate_fields(self) -> 'LegacyAnalysisRequest':
-        # Validate URL
-        if not validate_url(self.url):
-            raise ValueError("Invalid YouTube URL format")
-            
-        # Validate chunk duration
-        if (self.chunk_duration < settings.PIPELINE.MIN_CHUNK_DURATION or 
-            self.chunk_duration > settings.PIPELINE.MAX_CHUNK_DURATION):
-            raise ValueError(
-                f"Chunk duration must be between {settings.PIPELINE.MIN_CHUNK_DURATION} "
-                f"and {settings.PIPELINE.MAX_CHUNK_DURATION} seconds"
-            )
-        return self
-'''
-
 # Routes
 @app.websocket("/ws/analysis")
 async def websocket_endpoint(websocket: WebSocket):
@@ -154,12 +131,39 @@ async def create_source(request: SourceRequest):
 async def list_sources():
     """List all registered sources."""
     # Get unique sources from all pipelines
-    sources = {}
-    for pipeline in pipeline_manager.pipelines.values():
-        source = pipeline["source"]
-        sources[source.source_id] = source
-        
-    return [source.model_dump() for source in sources.values()]
+    sources = await pipeline_manager.get_all_sources()
+    return [source.model_dump() for source in sources]
+
+@app.delete("/sources/{source_id}", response_model=Dict[str, Any])
+async def delete_source(source_id: str):
+    """Delete a source and all its associated pipelines."""
+    # First, add this method to the PipelineManager class
+    source = await pipeline_manager.get_source(source_id)
+    
+    if not source:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source not found: {source_id}"
+        )
+    
+    # Find all pipelines that use this source
+    associated_pipelines = []
+    for pid, pipeline in list(pipeline_manager.pipelines.items()):
+        if pipeline["source"].source_id == source_id:
+            associated_pipelines.append(pid)
+            # Stop the pipeline if it's running
+            if pipeline["state_machine"].is_active():
+                await pipeline_manager.stop_pipeline(pid)
+    
+    # Remove the source
+    async with pipeline_manager._source_lock:
+        del pipeline_manager.sources[source_id]
+    
+    return {
+        "status": "success",
+        "message": f"Source {source_id} deleted along with {len(associated_pipelines)} associated pipelines",
+        "deleted_pipelines": associated_pipelines
+    }
 
 @app.post("/pipelines", response_model=Dict[str, Any])
 async def create_pipeline(request: PipelineRequest):
@@ -169,13 +173,9 @@ async def create_pipeline(request: PipelineRequest):
         logger.info(f"Creating pipeline for source: {request.source_id}")
         logger.debug(f"Full pipeline request data: {request.model_dump_json()}")
         
-        # Find the source
-        source = None
-        for pipeline in pipeline_manager.pipelines.values():
-            if pipeline["source"].source_id == request.source_id:
-                source = pipeline["source"]
-                break
-                
+        # Get the source directly from pipeline_manager
+        source = await pipeline_manager.get_source(request.source_id)
+        
         if not source:
             logger.error(f"Source not found: {request.source_id}")
             raise HTTPException(
@@ -185,7 +185,7 @@ async def create_pipeline(request: PipelineRequest):
             
         # Create pipeline with export_responses parameter
         pipeline_id = await pipeline_manager.create_pipeline(
-            source=source,
+            source=source,  # Pass the actual source object
             chunk_duration=request.chunk_duration,
             analysis_prompt=request.analysis_prompt,
             use_web_search=request.use_web_search,
@@ -200,6 +200,13 @@ async def create_pipeline(request: PipelineRequest):
             "message": "Pipeline created successfully",
             "pipeline_id": pipeline_id
         }
+    except ValueError as e:
+        # Handle the case where source is not found but caught by pipeline_manager
+        logger.error(f"Source error: {str(e)}")
+        raise HTTPException(
+            status_code=404, 
+            detail=str(e)
+        )
     except Exception as e:
         logger.error(f"Error creating pipeline: {str(e)}", exc_info=True)
         # Get full traceback for detailed debugging
@@ -282,70 +289,6 @@ async def get_pipeline_status(pipeline_id: str):
 async def list_pipelines():
     """List all pipelines."""
     return await pipeline_manager.get_all_pipeline_statuses()
-
-'''
-# Backward compatibility with original API
-@app.post("/start-analysis")
-async def start_analysis_legacy(request: LegacyAnalysisRequest):
-    """Legacy endpoint for starting analysis."""
-    try:
-        # Register source
-        source = await pipeline_manager.register_source(
-            url=request.url,
-            source_type="youtube",
-            metadata={"chunk_duration": request.chunk_duration}
-        )
-        
-        # Create pipeline with export_responses parameter
-        pipeline_id = await pipeline_manager.create_pipeline(
-            source=source,
-            chunk_duration=request.chunk_duration,
-            analysis_prompt=settings.ANALYSIS.DEFAULT_ANALYSIS_PROMPT,
-            use_web_search=settings.ANALYSIS.USE_WEB_SEARCH,
-            export_responses=request.export_responses,
-            runtime_duration=request.runtime_duration
-        )
-        
-        # Start pipeline
-        await pipeline_manager.start_pipeline(pipeline_id)
-        
-        return {
-            "status": "success",
-            "message": "Analysis started",
-            "pipeline_id": pipeline_id,
-            "url": request.url
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/stop-analysis")
-async def stop_analysis_legacy(request: LegacyAnalysisRequest):
-    """Legacy endpoint for stopping analysis."""
-    try:
-        # Find pipeline by URL
-        pipeline_id = None
-        for pid, pipeline in pipeline_manager.pipelines.items():
-            if pipeline["source"].url == request.url:
-                pipeline_id = pid
-                break
-                
-        if not pipeline_id:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No active analysis found for URL: {request.url}"
-            )
-            
-        # Stop pipeline
-        await pipeline_manager.stop_pipeline(pipeline_id)
-        
-        return {
-            "status": "success",
-            "message": "Analysis stopped",
-            "pipeline_id": pipeline_id
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-'''
 
 # Health check endpoint
 @app.get("/health")
@@ -467,3 +410,90 @@ async def get_response_file(filename: str):
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Error reading response file: {str(e)}")
+    
+
+'''
+class LegacyAnalysisRequest(BaseModel):
+    url: str
+    chunk_duration: int = settings.PIPELINE.DEFAULT_CHUNK_DURATION
+    export_responses: Optional[bool] = None  # Added field for controlling response export
+    runtime_duration: int = settings.PIPELINE.DEFAULT_RUNTIME_DURATION
+    
+    @model_validator(mode='after')
+    def validate_fields(self) -> 'LegacyAnalysisRequest':
+        # Validate URL
+        if not validate_url(self.url):
+            raise ValueError("Invalid YouTube URL format")
+            
+        # Validate chunk duration
+        if (self.chunk_duration < settings.PIPELINE.MIN_CHUNK_DURATION or 
+            self.chunk_duration > settings.PIPELINE.MAX_CHUNK_DURATION):
+            raise ValueError(
+                f"Chunk duration must be between {settings.PIPELINE.MIN_CHUNK_DURATION} "
+                f"and {settings.PIPELINE.MAX_CHUNK_DURATION} seconds"
+            )
+        return self
+'''
+'''
+# Backward compatibility with original API
+@app.post("/start-analysis")
+async def start_analysis_legacy(request: LegacyAnalysisRequest):
+    """Legacy endpoint for starting analysis."""
+    try:
+        # Register source
+        source = await pipeline_manager.register_source(
+            url=request.url,
+            source_type="youtube",
+            metadata={"chunk_duration": request.chunk_duration}
+        )
+        
+        # Create pipeline with export_responses parameter
+        pipeline_id = await pipeline_manager.create_pipeline(
+            source=source,
+            chunk_duration=request.chunk_duration,
+            analysis_prompt=settings.ANALYSIS.DEFAULT_ANALYSIS_PROMPT,
+            use_web_search=settings.ANALYSIS.USE_WEB_SEARCH,
+            export_responses=request.export_responses,
+            runtime_duration=request.runtime_duration
+        )
+        
+        # Start pipeline
+        await pipeline_manager.start_pipeline(pipeline_id)
+        
+        return {
+            "status": "success",
+            "message": "Analysis started",
+            "pipeline_id": pipeline_id,
+            "url": request.url
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/stop-analysis")
+async def stop_analysis_legacy(request: LegacyAnalysisRequest):
+    """Legacy endpoint for stopping analysis."""
+    try:
+        # Find pipeline by URL
+        pipeline_id = None
+        for pid, pipeline in pipeline_manager.pipelines.items():
+            if pipeline["source"].url == request.url:
+                pipeline_id = pid
+                break
+                
+        if not pipeline_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active analysis found for URL: {request.url}"
+            )
+            
+        # Stop pipeline
+        await pipeline_manager.stop_pipeline(pipeline_id)
+        
+        return {
+            "status": "success",
+            "message": "Analysis stopped",
+            "pipeline_id": pipeline_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+'''

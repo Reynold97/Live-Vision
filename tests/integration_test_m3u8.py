@@ -473,6 +473,49 @@ async def verify_chunking_stopped(pipeline_manager, pipeline_id, max_wait=30):
     logger.info("No new chunks detected after stop, chunking has stopped successfully")
     return True
 
+async def test_pipeline_creation_with_source_id(url: str):
+    """Test creating a pipeline using a source ID instead of a source object."""
+    logger.info(f"Testing pipeline creation with source ID using URL: {url}")
+    
+    pipeline_manager = PipelineManager(
+        base_data_dir=settings.PIPELINE.BASE_DATA_DIR,
+        max_concurrent_pipelines=1,
+        api_key=os.getenv("GOOGLE_API_KEY")
+    )
+    
+    # Register source and get its ID
+    source = await pipeline_manager.register_source(
+        url=url,
+        source_type="youtube",  # or "m3u8" for the m3u8 test
+        metadata={"test": True}
+    )
+    source_id = source.source_id
+    
+    # Create pipeline using only the source ID
+    pipeline_id = await pipeline_manager.create_pipeline(
+        source=source_id,  # Pass ID instead of source object
+        chunk_duration=20,
+        analysis_prompt="Testing source ID pipeline creation",
+        use_web_search=False
+    )
+    
+    logger.info(f"Created pipeline using source ID: {pipeline_id}")
+    
+    # Verify pipeline was created with the correct source
+    status = await pipeline_manager.get_pipeline_status(pipeline_id)
+    if not status:
+        logger.error("Pipeline status not found")
+        return False
+        
+    pipeline_source_id = status.get("source_id")
+    if pipeline_source_id != source_id:
+        logger.error(f"Pipeline has wrong source ID: {pipeline_source_id} vs expected {source_id}")
+        return False
+    
+    logger.info("Pipeline correctly created with source ID")
+    await pipeline_manager.stop_pipeline(pipeline_id)
+    return True
+
 async def main():
     """Run all integration tests with M3U8 and YouTube URLs."""
     try:
@@ -522,6 +565,13 @@ async def main():
         except Exception as e:
             logger.error(f"Error in multiple M3U8 pipelines test: {e}")
             results["multiple_m3u8"] = False
+        
+        try:
+            results["pipeline_with_source_id"] = await test_pipeline_creation_with_source_id(m3u8_url)  
+            logger.info(f"Source ID pipeline test result: {'PASS' if results['pipeline_with_source_id'] else 'FAIL'}")
+        except Exception as e:
+            logger.error(f"Error in create pipeline with source id test: {e}")
+            results["pipeline_with_source_id"] = False
             
         #try:
         #    results["mixed_sources"] = await test_mixed_sources_pipelines(m3u8_url, youtube_url)
@@ -531,7 +581,7 @@ async def main():
         #    results["mixed_sources"] = False
         
         # Overall result - consider critical tests
-        critical_tests = ["websocket", "error_handling", "multiple_m3u8"]
+        critical_tests = ["websocket", "error_handling", "multiple_m3u8", "pipeline_with_source_id"]
         all_critical_passed = all(results.get(test, False) for test in critical_tests)
         
         logger.info(f"M3U8 integration tests overall result: {'PASS' if all_critical_passed else 'FAIL'}")
